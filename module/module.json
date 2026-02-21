@@ -1,0 +1,14 @@
+{
+	"name": "ctron_plugin",
+	"version": "0.0.1",
+	"title": "Ctron Plugin (PoC)",
+	"description": "Reports player-built roboports to Clusterio.",
+	"dependencies": {},
+	"factorio_version": "2.0",
+	"load": [
+		"control.lua"
+	],
+	"require": [
+		"globals.lua"
+	]
+}

@@ -1,0 +1,16 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"jsx": "react-jsx",
+		"module": "esnext",
+		"target": "ES2022",
+		"lib": ["DOM", "ES2022"],
+		"rootDir": ".",
+		"noEmit": true
+	},
+	"include": [
+		"web/**/*.tsx",
+		"web/**/*.ts",
+		"messages.ts"
+	]
+}

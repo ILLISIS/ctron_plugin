@@ -1,0 +1,16 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"rootDir": ".",
+		"outDir": "dist/node",
+		"declaration": false,
+		"sourceMap": true
+	},
+	"include": [
+		"index.ts",
+		"controller.ts",
+		"instance.ts",
+		"messages.ts",
+		"src/**/*.ts"
+	]
+}
