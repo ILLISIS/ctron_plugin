@@ -51,12 +51,63 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	storageDirty = false;
 	static readonly dbFilename = "ctron_jobs.json";
 
+	// Service station status by instance id.
+	serviceStationStatusByInstance: Map<number, messages.InstanceServiceStationStatus> = new Map();
+	serviceStationStorageDirty = false;
+	static readonly serviceStationDbFilename = "ctron_service_station_status.json";
+
 	async init() {
 		this.controller.handle(messages.ConstructronJobAdd, this.handleJobAdd.bind(this));
+		this.controller.handle(messages.ConstructronJobClaim, this.handleJobClaim.bind(this));
 		this.controller.handle(messages.ConstructronJobConsume, this.handleJobConsume.bind(this));
 		this.controller.handle(messages.ConstructronJobRemove, this.handleJobRemove.bind(this));
 		this.controller.handle(messages.ConstructronJobRoute, this.handleJobRoute.bind(this));
 		this.controller.subscriptions.handle(messages.ConstructronJobUpdate, this.handleJobsSubscription.bind(this));
+
+		// Service station subscriber status
+		this.controller.handle(
+			messages.InstanceServiceStationStatusUpdate,
+			this.handleInstanceServiceStationStatusUpdate.bind(this),
+		);
+		this.controller.subscriptions.handle(
+			messages.InstanceServiceStationStatusStream,
+			this.handleInstanceServiceStationStatusSubscription.bind(this),
+		);
+
+		// Load persisted service-station state first so restarts retain the last known status.
+		const loadedStatus = await loadDatabase(
+			this.controller.config,
+			ControllerPlugin.serviceStationDbFilename,
+			this.logger,
+		) as unknown as Map<string, messages.InstanceServiceStationStatus>;
+		this.serviceStationStatusByInstance = new Map();
+		for (const value of loadedStatus.values()) {
+			const instanceId = Number((value as any)?.instanceId);
+			if (Number.isFinite(instanceId)) {
+				this.serviceStationStatusByInstance.set(instanceId, value);
+			}
+		}
+
+		// Seed default status for instances we don't have persisted entries for.
+		const now = Date.now();
+		const initial: messages.InstanceServiceStationStatus[] = [];
+		for (const instance of this.controller.instances.values()) {
+			const instanceId = instance.id;
+			if (this.serviceStationStatusByInstance.has(instanceId)) {
+				continue;
+			}
+			const status: messages.InstanceServiceStationStatus = {
+				id: `instance:${instanceId}`,
+				updatedAtMs: now,
+				isDeleted: false,
+				instanceId,
+				serviceStationCount: 0,
+				isSubscriber: false,
+			};
+			this.serviceStationStatusByInstance.set(instanceId, status);
+			initial.push(status);
+		}
+		this.broadcastServiceStationStatus([...this.serviceStationStatusByInstance.values()]);
 
 		this.jobsById = await loadDatabase(this.controller.config, ControllerPlugin.dbFilename, this.logger);
 		// Rebuild key index
@@ -75,12 +126,85 @@ export class ControllerPlugin extends BaseControllerPlugin {
 			this.storageDirty = false;
 			await saveDatabase(this.controller.config, this.jobsById, ControllerPlugin.dbFilename, this.logger);
 		}
+		if (this.serviceStationStorageDirty) {
+			this.serviceStationStorageDirty = false;
+			await saveDatabase(
+				this.controller.config,
+				this.serviceStationStatusByInstance as unknown as Map<any, any>,
+				ControllerPlugin.serviceStationDbFilename,
+				this.logger,
+			);
+		}
 	}
 
 	private broadcast(updates: messages.ConstructronJobValue[]) {
 		if (updates.length) {
 			this.controller.subscriptions.broadcast(new messages.ConstructronJobUpdate(updates));
 		}
+	}
+
+	private broadcastServiceStationStatus(updates: messages.InstanceServiceStationStatus[]) {
+		if (updates.length) {
+			this.controller.subscriptions.broadcast(new messages.InstanceServiceStationStatusStream(updates));
+		}
+	}
+
+	async handleInstanceServiceStationStatusUpdate(event: messages.InstanceServiceStationStatusUpdate) {
+		const now = Date.now();
+		const count = Math.max(0, Math.floor(event.serviceStationCount));
+		const status: messages.InstanceServiceStationStatus = {
+			id: `instance:${event.instanceId}`,
+			updatedAtMs: now,
+			isDeleted: false,
+			instanceId: event.instanceId,
+			serviceStationCount: count,
+			isSubscriber: count > 0,
+		};
+
+		this.serviceStationStatusByInstance.set(event.instanceId, status);
+		this.serviceStationStorageDirty = true;
+		this.broadcastServiceStationStatus([status]);
+	}
+
+	async handleInstanceServiceStationStatusSubscription(request: lib.SubscriptionRequest) {
+		const values = [...this.serviceStationStatusByInstance.values()]
+			.filter(v => v.updatedAtMs > request.lastRequestTimeMs);
+		return values.length ? new messages.InstanceServiceStationStatusStream(values) : null;
+	}
+
+	async handleJobClaim(event: messages.ConstructronJobClaim) {
+		// Find the oldest unclaimed (non-deleted) job.
+		// Require the job to be at least 1 second old to avoid race conditions
+		// where a subscriber claims a job in the same tick the publisher adds it.
+		const minAgeMs = 1000;
+		const now = Date.now();
+		let oldest: messages.ConstructronJobValue | undefined;
+		let oldestKey: string | undefined;
+		for (const [key, job] of this.jobsById) {
+			if (!job.isDeleted && (now - job.updatedAtMs) >= minAgeMs) {
+				if (!oldest || job.updatedAtMs < oldest.updatedAtMs) {
+					oldest = job;
+					oldestKey = key;
+				}
+			}
+		}
+		if (!oldest || !oldestKey) return null;
+
+		// Find jobKey for this job id (reverse lookup).
+		let jobKey: string | undefined;
+		for (const [k, id] of this.jobsByKey) {
+			if (id === oldestKey) { jobKey = k; break; }
+		}
+
+		// Tombstone and remove.
+		const tombstone: messages.ConstructronJobValue = { ...oldest, updatedAtMs: Date.now(), isDeleted: true, lastInstanceId: event.instanceId };
+		this.jobsById.delete(oldestKey);
+		if (jobKey) this.jobsByKey.delete(jobKey);
+		this.storageDirty = true;
+		this.broadcast([tombstone]);
+
+		this.logger.info(`ConstructronJobClaim: instance ${event.instanceId} claimed job ${oldestKey} (type=${oldest.jobType})`);
+		return { jobKey: jobKey ?? oldestKey, jobType: oldest.jobType, job: oldest.job };
 	}
 
 	async handleJobAdd(event: messages.ConstructronJobAdd) {

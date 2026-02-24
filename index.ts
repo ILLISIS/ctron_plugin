@@ -25,11 +25,14 @@ export const plugin: lib.PluginDeclaration = {
 
 	messages: [
 		messages.ConstructronJobAdd,
+		messages.ConstructronJobClaim,
 		messages.ConstructronJobConsume,
 		messages.ConstructronJobRemove,
 		messages.ConstructronJobUpdate,
 		messages.ConstructronJobRoute,
 		messages.ConstructronJobDeliver,
+		messages.InstanceServiceStationStatusUpdate,
+		messages.InstanceServiceStationStatusStream,
 	],
 
 	webEntrypoint: "./web",

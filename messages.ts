@@ -1,3 +1,4 @@
+import { plainJson } from "@clusterio/lib";
 import { Type, Static } from "@sinclair/typebox";
 
 // A stored Constructron job on the controller.
@@ -137,6 +138,37 @@ export class ConstructronJobRoute {
 }
 
 /**
+ * Request from instance -> controller to atomically claim one pending job.
+ * Returns the claimed job or null if none are available.
+ */
+export class ConstructronJobClaim {
+	declare ["constructor"]: typeof ConstructronJobClaim;
+	static type = "request" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(public instanceId: number) { }
+
+	static jsonSchema = Type.Object({
+		instanceId: Type.Number(),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(json.instanceId);
+	}
+
+	static Response = plainJson(Type.Union([
+		Type.Object({
+			jobKey: Type.String(),
+			jobType: Type.String(),
+			job: Type.Unknown(),
+		}),
+		Type.Null(),
+	]));
+}
+
+/**
  * Event from controller -> instance delivering a routed job to a destination instance.
  */
 export class ConstructronJobDeliver {
@@ -164,5 +196,65 @@ export class ConstructronJobDeliver {
 
 	static fromJSON(json: Static<typeof this.jsonSchema>) {
 		return new this(json.sourceInstanceId, json.destinationInstanceId, json.jobType, json.job, json.jobKey);
+	}
+}
+
+/**
+ * Per-instance service station status tracked on the controller.
+ * Uses the same "subscribable value" shape as other Clusterio web subscriptions.
+ */
+const InstanceServiceStationStatus = Type.Object({
+	id: Type.String(),
+	updatedAtMs: Type.Number(),
+	isDeleted: Type.Boolean(),
+
+	instanceId: Type.Number(),
+	serviceStationCount: Type.Number(),
+	isSubscriber: Type.Boolean(),
+});
+
+export type InstanceServiceStationStatus = Static<typeof InstanceServiceStationStatus>;
+
+/**
+ * Event from instance -> controller whenever service station count changes.
+ */
+export class InstanceServiceStationStatusUpdate {
+	declare ["constructor"]: typeof InstanceServiceStationStatusUpdate;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(public instanceId: number, public serviceStationCount: number) { }
+
+	static jsonSchema = Type.Object({
+		instanceId: Type.Number(),
+		serviceStationCount: Type.Number(),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(json.instanceId, json.serviceStationCount);
+	}
+}
+
+/**
+ * Subscribable event from controller -> control to update service station status.
+ */
+export class InstanceServiceStationStatusStream {
+	declare ["constructor"]: typeof InstanceServiceStationStatusStream;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "control" as const;
+	static plugin = "ctron_plugin" as const;
+	static permission = "ctron_plugin.jobs.read";
+
+	constructor(public updates: InstanceServiceStationStatus[]) { }
+
+	static jsonSchema = Type.Object({
+		updates: Type.Array(InstanceServiceStationStatus),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(json.updates);
 	}
 }

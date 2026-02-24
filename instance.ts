@@ -53,6 +53,11 @@ type ConstructronJobRouteIPC = {
 	job_key?: string;
 };
 
+type ServiceStationCountIPC = {
+	instance_id?: number;
+	service_station_count?: number;
+};
+
 export class InstancePlugin extends BaseInstancePlugin {
 	async init() {
 		// Factorio -> host IPC event emitted by clusterio_lib when our module calls clusterio_api.send_json(...)
@@ -77,8 +82,47 @@ export class InstancePlugin extends BaseInstancePlugin {
 			));
 		});
 
+		(this.instance.server as any).on("ipc-ctron_plugin:job_claim", () => {
+			this.claimJobFromController().catch(err => this.logger.error(
+				`Error handling job_claim:\n${err.stack}`
+			));
+		});
+
+		(this.instance.server as any).on("ipc-ctron_plugin:service_station_count", (data: ServiceStationCountIPC) => {
+			this.handleServiceStationCount(data).catch(err => this.logger.error(
+				`Error handling service_station_count:\n${err.stack}`
+			));
+		});
+
 		// Controller -> host -> instance message delivery
 		this.instance.handle(messages.ConstructronJobDeliver, this.handleJobDeliver.bind(this));
+	}
+
+	// Called by on_nth_tick_300 Lua handler (via IPC) when running as a subscriber to claim a job from the controller.
+	async claimJobFromController() {
+		const instanceId = this.getInstanceId();
+		this.logger.info(`Claiming job from controller (instanceId=${instanceId})`);
+		let result: { jobKey: string; jobType: string; job: unknown } | null;
+		try {
+			result = await this.instance.sendTo("controller", new messages.ConstructronJobClaim(instanceId)) as any;
+		} catch (err: any) {
+			this.logger.error(`ConstructronJobClaim failed: ${err?.stack ?? err}`);
+			return;
+		}
+		if (!result) {
+			this.logger.info("ConstructronJobClaim: no jobs available on controller");
+			return;
+		}
+
+		this.logger.info(`ConstructronJobClaim: got job key=${result.jobKey} type=${result.jobType}, sending to Lua`);
+		const jobJson = JSON.stringify(result.job ?? null);
+		const script = `ctron_plugin_on_job_claimed(${JSON.stringify(jobJson)})`;
+		try {
+			const rconResult = await this.sendRcon(`/sc ${script}`);
+			this.logger.info(`ConstructronJobClaim applied for key=${result.jobKey}: ${JSON.stringify(rconResult)}`);
+		} catch (err: any) {
+			this.logger.error(`Failed to apply claimed job for key=${result.jobKey}: ${err?.stack ?? err}`);
+		}
 	}
 
 	async onStart() {
@@ -151,6 +195,16 @@ export class InstancePlugin extends BaseInstancePlugin {
 		);
 	}
 
+	async handleServiceStationCount(data: ServiceStationCountIPC) {
+		const instanceId = this.getInstanceId(data.instance_id);
+		const count = Number.isFinite(data.service_station_count as any) ? Number(data.service_station_count) : 0;
+		this.logger.info(`Forwarding InstanceServiceStationStatusUpdate(instanceId=${instanceId}, count=${count})`);
+		await this.instance.sendTo(
+			"controller",
+			new messages.InstanceServiceStationStatusUpdate(instanceId, count),
+		);
+	}
+
 	async handleJobDeliver(event: messages.ConstructronJobDeliver) {
 		// Cache delivered job in save storage; Factorio Lua will apply it when the matching constructron spawns.
 		this.logger.info(
@@ -166,19 +220,17 @@ export class InstancePlugin extends BaseInstancePlugin {
 		const jobJson = JSON.stringify(event.job ?? null);
 
 		const script = [
-			"storage.ctron_plugin = storage.ctron_plugin or {}",
-			"storage.ctron_plugin.delivered = storage.ctron_plugin.delivered or {}",
 			// Store job as JSON string. Do NOT attempt to parse in /sc.
-			`storage.ctron_plugin.delivered[${escapedKey}] = { ok = true, job_type = ${jobType}, job_json = ${JSON.stringify(jobJson)} }`,
-			"rcon.print('ctron_plugin: delivered job stored for ' .. " + escapedKey + ")",
+			`storage.ctron_plugin.queued_jobs[${escapedKey}] = { ok = true, job_type = ${jobType}, job_json = ${JSON.stringify(jobJson)} }`,
+			"rcon.print('ctron_plugin: queued job stored for ' .. " + escapedKey + ")",
 		].join("; ");
 
 		try {
-			this.logger.info(`Storing delivered job via rcon for key=${event.jobKey}`);
+			this.logger.info(`Storing queued job via rcon for key=${event.jobKey}`);
 			const result = await this.sendRcon(`/sc ${script}`);
 			this.logger.info(`RCON store result for jobKey=${event.jobKey}: ${JSON.stringify(result)}`);
 		} catch (err: any) {
-			this.logger.error(`Failed to store delivered job for jobKey=${event.jobKey}: ${err?.stack ?? err}`);
+			this.logger.error(`Failed to store queued job for jobKey=${event.jobKey}: ${err?.stack ?? err}`);
 		}
 	}
 }

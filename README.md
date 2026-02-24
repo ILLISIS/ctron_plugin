@@ -1,12 +1,9 @@
-# ctron_plugin (PoC)
+# Constructron-continued
 
-Clusterio plugin that shows a per-instance count of **player-built** `roboport` entities on the controller Web UI.
+Overhaul and continuation of https://mods.factorio.com/mod/Constructron
 
-## What it does
-- Factorio mod detects `on_built_entity` for `roboport` (player-built only).
-- Instance plugin forwards event to controller.
-- Controller keeps an in-memory per-instance counter and broadcasts updates to Web UI subscribers.
-- Web UI shows a new page: **Roboport counts**.
+Discord: https://discord.gg/m9TDSsH3u2
 
-## Notes
-- Proof-of-concept: counts reset when controller restarts.
+## Contributing
+
+If you want to contribute to this mod, please read the [CONTRIBUTING](CONTRIBUTING.md) info.
