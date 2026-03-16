@@ -58,6 +58,26 @@ type ServiceStationCountIPC = {
 	service_station_count?: number;
 };
 
+type CtronPathRequestIPC = {
+	requesterId?: number;
+	surface?: string;
+	boundingBox?: { x1: number; y1: number; x2: number; y2: number };
+	start?: { x: number; y: number };
+	goal?: { x: number; y: number };
+	force?: string;
+	radius?: number;
+	pathResolutionModifier?: number;
+};
+
+type CtronPathResponseIPC = {
+	requesterId?: number;
+	sourceInstanceId?: number;
+	path?: Array<{ position: { x: number; y: number }; needsDestroyToReach: boolean }> | null;
+	tryAgainLater?: boolean;
+	partial?: boolean;
+	fullyCached?: boolean;
+};
+
 export class InstancePlugin extends BaseInstancePlugin {
 	async init() {
 		// Factorio -> host IPC event emitted by clusterio_lib when our module calls clusterio_api.send_json(...)
@@ -96,6 +116,26 @@ export class InstancePlugin extends BaseInstancePlugin {
 
 		// Controller -> host -> instance message delivery
 		this.instance.handle(messages.ConstructronJobDeliver, this.handleJobDeliver.bind(this));
+
+		// Path request: game Lua -> controller -> pathworld
+		(this.instance.server as any).on("ipc-ctron_plugin:path_request", (data: CtronPathRequestIPC) => {
+			this.handlePathRequest(data).catch(err => this.logger.error(
+				`Error handling path_request:\n${err.stack}`
+			));
+		});
+
+		// Path response IPC: pathworld Lua -> controller -> game
+		(this.instance.server as any).on("ipc-ctron_plugin:path_response", (data: CtronPathResponseIPC) => {
+			this.handlePathResponseIPC(data).catch(err => this.logger.error(
+				`Error handling path_response ipc:\n${err.stack}`
+			));
+		});
+
+		// Controller delivers forwarded request -> pathworld Lua via RCON
+		this.instance.handle(messages.CtronForwardPathRequest, this.handleForwardPathRequest.bind(this));
+
+		// Controller delivers result -> game Lua via RCON
+		this.instance.handle(messages.CtronReturnPathResponse, this.handleReturnPathResponse.bind(this));
 	}
 
 	// Called by on_nth_tick_300 Lua handler (via IPC) when running as a subscriber to claim a job from the controller.
@@ -203,6 +243,73 @@ export class InstancePlugin extends BaseInstancePlugin {
 			"controller",
 			new messages.InstanceServiceStationStatusUpdate(instanceId, count),
 		);
+	}
+
+	async handlePathRequest(data: CtronPathRequestIPC) {
+		const instanceId = this.getInstanceId();
+		const requesterId = data.requesterId ?? 0;
+		this.logger.info(`[ctron_plugin] forwarding path request ${requesterId} to controller`);
+		await this.instance.sendTo("controller", new messages.CtronPathRequest(
+			instanceId,
+			requesterId,
+			data.surface ?? "nauvis",
+			data.boundingBox ?? { x1: -5, y1: -5, x2: 5, y2: 5 },
+			data.start ?? { x: 0, y: 0 },
+			data.goal ?? { x: 0, y: 0 },
+			data.force ?? "player",
+			data.radius ?? 1,
+			data.pathResolutionModifier ?? 0,
+		));
+	}
+
+	async handlePathResponseIPC(data: CtronPathResponseIPC) {
+		const requesterId = data.requesterId ?? 0;
+		const sourceInstanceId = data.sourceInstanceId ?? this.getInstanceId();
+		this.logger.info(`[ctron_plugin] pathworld sending path response for requester ${requesterId} to instance ${sourceInstanceId}`);
+		await this.instance.sendTo("controller", new messages.CtronPathResponse(
+			requesterId,
+			sourceInstanceId,
+			data.path ?? null,
+			data.tryAgainLater ?? false,
+			data.partial ?? false,
+			data.fullyCached ?? false,
+		));
+	}
+
+	async handleForwardPathRequest(event: messages.CtronForwardPathRequest) {
+		const payload = JSON.stringify({
+			requesterId:         event.requesterId,
+			sourceInstanceId:    event.sourceInstanceId,
+			surface:             event.surface,
+			boundingBox:         event.boundingBox,
+			start:               event.start,
+			goal:                event.goal,
+			force:               event.force,
+			radius:              event.radius,
+			pathResolutionModifier: event.pathResolutionModifier,
+		});
+		const script = `ctron_plugin_pathworld_on_path_request(${JSON.stringify(payload)})`;
+		try {
+			await this.sendRcon(`/sc ${script}`);
+		} catch (err: any) {
+			this.logger.error(`[ctron_plugin] RCON failed for path request ${event.requesterId}: ${err?.stack ?? err}`);
+		}
+	}
+
+	async handleReturnPathResponse(event: messages.CtronReturnPathResponse) {
+		const payload = JSON.stringify({
+			id:              event.requesterId,
+			path:            event.path,
+			try_again_later: event.tryAgainLater,
+			partial:         event.partial,
+			fully_cached:    event.fullyCached,
+		});
+		const script = `ctron_plugin_on_path_response(${JSON.stringify(payload)})`;
+		try {
+			await this.sendRcon(`/sc ${script}`);
+		} catch (err: any) {
+			this.logger.error(`[ctron_plugin] RCON failed for path response ${event.requesterId}: ${err?.stack ?? err}`);
+		}
 	}
 
 	async handleJobDeliver(event: messages.ConstructronJobDeliver) {

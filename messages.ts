@@ -199,6 +199,165 @@ export class ConstructronJobDeliver {
 	}
 }
 
+/** Bounding box serialised for cross-instance path requests. */
+const PathBoundingBox = Type.Object({
+	x1: Type.Number(), y1: Type.Number(),
+	x2: Type.Number(), y2: Type.Number(),
+});
+
+const PathWaypoint = Type.Object({
+	position: Type.Object({ x: Type.Number(), y: Type.Number() }),
+	needsDestroyToReach: Type.Boolean(),
+});
+
+/** Event instance -> controller: local pathfinding exhausted, route to pathworld. */
+export class CtronPathRequest {
+	declare ["constructor"]: typeof CtronPathRequest;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(
+		public sourceInstanceId: number,
+		public requesterId: number,
+		public surface: string,
+		public boundingBox: Static<typeof PathBoundingBox>,
+		public start: { x: number; y: number },
+		public goal: { x: number; y: number },
+		public force: string,
+		public radius: number,
+		public pathResolutionModifier: number,
+	) {}
+
+	static jsonSchema = Type.Object({
+		sourceInstanceId: Type.Number(),
+		requesterId: Type.Number(),
+		surface: Type.String(),
+		boundingBox: PathBoundingBox,
+		start: Type.Object({ x: Type.Number(), y: Type.Number() }),
+		goal: Type.Object({ x: Type.Number(), y: Type.Number() }),
+		force: Type.String(),
+		radius: Type.Number(),
+		pathResolutionModifier: Type.Number(),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(
+			json.sourceInstanceId, json.requesterId, json.surface,
+			json.boundingBox, json.start, json.goal, json.force, json.radius,
+			json.pathResolutionModifier,
+		);
+	}
+}
+
+/** Event controller -> pathworld instance: forwarded path request. */
+export class CtronForwardPathRequest {
+	declare ["constructor"]: typeof CtronForwardPathRequest;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(
+		public sourceInstanceId: number,
+		public requesterId: number,
+		public surface: string,
+		public boundingBox: Static<typeof PathBoundingBox>,
+		public start: { x: number; y: number },
+		public goal: { x: number; y: number },
+		public force: string,
+		public radius: number,
+		public pathResolutionModifier: number,
+	) {}
+
+	static jsonSchema = Type.Object({
+		sourceInstanceId: Type.Number(),
+		requesterId: Type.Number(),
+		surface: Type.String(),
+		boundingBox: PathBoundingBox,
+		start: Type.Object({ x: Type.Number(), y: Type.Number() }),
+		goal: Type.Object({ x: Type.Number(), y: Type.Number() }),
+		force: Type.String(),
+		radius: Type.Number(),
+		pathResolutionModifier: Type.Number(),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(
+			json.sourceInstanceId, json.requesterId, json.surface,
+			json.boundingBox, json.start, json.goal, json.force, json.radius,
+			json.pathResolutionModifier,
+		);
+	}
+}
+
+/** Event pathworld instance -> controller: path result ready. */
+export class CtronPathResponse {
+	declare ["constructor"]: typeof CtronPathResponse;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(
+		public requesterId: number,
+		public sourceInstanceId: number,
+		public path: Array<Static<typeof PathWaypoint>> | null,
+		public tryAgainLater: boolean,
+		public partial: boolean,
+		public fullyCached: boolean,
+	) {}
+
+	static jsonSchema = Type.Object({
+		requesterId: Type.Number(),
+		sourceInstanceId: Type.Number(),
+		path: Type.Union([Type.Array(PathWaypoint), Type.Null()]),
+		tryAgainLater: Type.Boolean(),
+		partial: Type.Boolean(),
+		fullyCached: Type.Boolean(),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(
+			json.requesterId, json.sourceInstanceId, json.path,
+			json.tryAgainLater, json.partial, json.fullyCached,
+		);
+	}
+}
+
+/** Event controller -> game instance: deliver path result back. */
+export class CtronReturnPathResponse {
+	declare ["constructor"]: typeof CtronReturnPathResponse;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(
+		public requesterId: number,
+		public path: Array<Static<typeof PathWaypoint>> | null,
+		public tryAgainLater: boolean,
+		public partial: boolean,
+		public fullyCached: boolean,
+	) {}
+
+	static jsonSchema = Type.Object({
+		requesterId: Type.Number(),
+		path: Type.Union([Type.Array(PathWaypoint), Type.Null()]),
+		tryAgainLater: Type.Boolean(),
+		partial: Type.Boolean(),
+		fullyCached: Type.Boolean(),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(
+			json.requesterId, json.path,
+			json.tryAgainLater, json.partial, json.fullyCached,
+		);
+	}
+}
+
 /**
  * Per-instance service station status tracked on the controller.
  * Uses the same "subscribable value" shape as other Clusterio web subscriptions.

@@ -62,6 +62,8 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		this.controller.handle(messages.ConstructronJobConsume, this.handleJobConsume.bind(this));
 		this.controller.handle(messages.ConstructronJobRemove, this.handleJobRemove.bind(this));
 		this.controller.handle(messages.ConstructronJobRoute, this.handleJobRoute.bind(this));
+		this.controller.handle(messages.CtronPathRequest, this.handleCtronPathRequest.bind(this));
+		this.controller.handle(messages.CtronPathResponse, this.handleCtronPathResponse.bind(this));
 		this.controller.subscriptions.handle(messages.ConstructronJobUpdate, this.handleJobsSubscription.bind(this));
 
 		// Service station subscriber status
@@ -322,6 +324,75 @@ export class ControllerPlugin extends BaseControllerPlugin {
 			this.logger.info(`ConstructronJobDeliver forwarded to host ${assignedHostId} (seq=${seq}) dst=${dst}`);
 		} catch (err: any) {
 			this.logger.error(`Failed to forward ConstructronJobDeliver to host ${assignedHostId}: ${err?.stack ?? err}`);
+		}
+	}
+
+	private getPathworldInstanceId(): number | undefined {
+		for (const instance of this.controller.instances.values()) {
+			if (instance.config.get("instance.name") === "pathworld") {
+				return instance.id;
+			}
+		}
+		return undefined;
+	}
+
+	async handleCtronPathRequest(event: messages.CtronPathRequest) {
+		const pathworldId = this.getPathworldInstanceId();
+		if (pathworldId == null) {
+			this.logger.warn(`[ctron_plugin] path request ${event.requesterId}: no pathworld instance found, dropping`);
+			return;
+		}
+		const instance = this.controller.instances.get(pathworldId)!;
+		const assignedHostId = instance.config.get("instance.assigned_host");
+		if (assignedHostId === null) {
+			this.logger.warn(`[ctron_plugin] path request ${event.requesterId}: pathworld not assigned to a host, dropping`);
+			return;
+		}
+		const hostConnection = this.controller.wsServer.hostConnections.get(assignedHostId);
+		if (!hostConnection) {
+			this.logger.warn(`[ctron_plugin] path request ${event.requesterId}: pathworld host offline, dropping`);
+			return;
+		}
+		this.logger.info(`[ctron_plugin] forwarding path request ${event.requesterId} from ${event.sourceInstanceId} -> pathworld ${pathworldId}`);
+		const dst = lib.Address.fromShorthand({ instanceId: pathworldId });
+		const forward = new messages.CtronForwardPathRequest(
+			event.sourceInstanceId, event.requesterId, event.surface,
+			event.boundingBox, event.start, event.goal, event.force, event.radius,
+			event.pathResolutionModifier,
+		);
+		try {
+			hostConnection.connector.sendEvent(forward, dst);
+		} catch (err: any) {
+			this.logger.error(`[ctron_plugin] failed to forward path request: ${err?.stack ?? err}`);
+		}
+	}
+
+	async handleCtronPathResponse(event: messages.CtronPathResponse) {
+		const instance = this.controller.instances.get(event.sourceInstanceId);
+		if (!instance) {
+			this.logger.warn(`[ctron_plugin] path response for unknown source instance ${event.sourceInstanceId}, dropping`);
+			return;
+		}
+		const assignedHostId = instance.config.get("instance.assigned_host");
+		if (assignedHostId === null) {
+			this.logger.warn(`[ctron_plugin] path response: source instance ${event.sourceInstanceId} not assigned to host, dropping`);
+			return;
+		}
+		const hostConnection = this.controller.wsServer.hostConnections.get(assignedHostId);
+		if (!hostConnection) {
+			this.logger.warn(`[ctron_plugin] path response: source host offline (instance=${event.sourceInstanceId}), dropping`);
+			return;
+		}
+		this.logger.info(`[ctron_plugin] returning path response for requester ${event.requesterId} to instance ${event.sourceInstanceId}`);
+		const dst = lib.Address.fromShorthand({ instanceId: event.sourceInstanceId });
+		const ret = new messages.CtronReturnPathResponse(
+			event.requesterId, event.path,
+			event.tryAgainLater, event.partial, event.fullyCached,
+		);
+		try {
+			hostConnection.connector.sendEvent(ret, dst);
+		} catch (err: any) {
+			this.logger.error(`[ctron_plugin] failed to return path response: ${err?.stack ?? err}`);
 		}
 	}
 

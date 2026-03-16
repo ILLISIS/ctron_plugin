@@ -348,6 +348,7 @@ function job:move_to_position(position)
 
     if distance > 12 then
         if self.pathfinding then return end
+        if self.remote_path_requested then return end
         if self.landfill_job and not self.custom_path and (self.state == "in_progress") then
             worker.enable_logistics_while_moving = true
             self:disable_roboports(1)

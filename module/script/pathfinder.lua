@@ -1,5 +1,6 @@
 local debug_lib = require("modules/ctron_plugin/script/debug_lib")
 local util_func = require("modules/ctron_plugin/script/utility_functions")
+local clusterio_api = require("modules/clusterio/api")
 
 -------------------------------------------------------------------------------
 --  Init
@@ -52,6 +53,31 @@ end
 -------------------------------------------------------------------------------
 
 pathfinder.on_path_request_finished = (function(event)
+    -- Pathworld side: check if this is a forwarded request we queued.
+    log("[ctron_plugin] on_path_request_finished id=" .. tostring(event.id) .. " pathworld_pending=" .. tostring(storage.pathworld_pending ~= nil) .. " pending_entry=" .. tostring(storage.pathworld_pending and storage.pathworld_pending[event.id] ~= nil))
+    if storage.pathworld_pending and storage.pathworld_pending[event.id] then
+        local pending = storage.pathworld_pending[event.id]
+        storage.pathworld_pending[event.id] = nil
+        local serialised_path = nil
+        if event.path then
+            serialised_path = {}
+            for i, wp in ipairs(event.path) do
+                serialised_path[i] = {
+                    position = { x = wp.position.x, y = wp.position.y },
+                    needsDestroyToReach = wp.needs_destroy_to_reach or false,
+                }
+            end
+        end
+        clusterio_api.send_json("ctron_plugin:path_response", {
+            requesterId      = pending.requesterId,
+            sourceInstanceId = pending.sourceInstanceId,
+            path             = serialised_path,
+            tryAgainLater    = event.try_again_later or false,
+            partial          = event.partial          or false,
+            fullyCached      = event.fully_cached     or false,
+        })
+        return
+    end
     local job = storage.pathfinder_requests[event.id]
     if not job or not job.worker or not job.worker.valid then return end
     local path = event.path
@@ -79,6 +105,11 @@ pathfinder.on_path_request_finished = (function(event)
         else
             debug_lib.VisualDebugText({"ctron_status.no_path_found"}, job.worker, -0.5, 1)
             debug_lib.VisualDebugLine(job.path_request_params.start, job.path_request_params.goal, job.worker.surface, "red", 1200)
+            -- All local retries exhausted — escalate to the remote path instance.
+            if not job.remote_path_requested then
+                job.remote_path_requested = true
+                pathfinder.request_remote_path(job)
+            end
         end
     else
         if clean_linear_path_enabled then
@@ -393,6 +424,199 @@ function pathfinder.clean_path_steps(path, min_distance)
         new_path[#new_path] = path[#path]
     end
     return new_path
+end
+
+-------------------------------------------------------------------------------
+--  Remote path-instance integration
+-------------------------------------------------------------------------------
+
+--- Send a path request to the remote path instance when all local retries are
+--- exhausted.  Uses job.job_index as the unique requester_id so the response
+--- can be matched back.  Stores the job in
+--- storage.pathfinder_remote_requests[job.job_index] for the callback.
+---@param job table
+function pathfinder.request_remote_path(job)
+    if not (job and job.worker and job.worker.valid) then return end
+    local params = job.path_request_params
+    if not params then return end
+
+    -- Initialise the remote-request table if needed.
+    storage.pathfinder_remote_requests = storage.pathfinder_remote_requests or {}
+    storage.pathfinder_remote_requests[job.job_index] = { job = job, tick = game.tick }
+
+    -- Convert the bounding-box from Factorio's {{x1,y1},{x2,y2}} format.
+    local bb = params.bounding_box
+    local bb_x1, bb_y1, bb_x2, bb_y2
+    if bb then
+        -- Support both {left_top=…, right_bottom=…} and {{x,y},{x,y}} layouts.
+        if bb.left_top then
+            bb_x1 = bb.left_top.x  or bb.left_top[1]
+            bb_y1 = bb.left_top.y  or bb.left_top[2]
+            bb_x2 = bb.right_bottom.x or bb.right_bottom[1]
+            bb_y2 = bb.right_bottom.y or bb.right_bottom[2]
+        else
+            bb_x1 = (bb[1] and (bb[1].x or bb[1][1])) or -5
+            bb_y1 = (bb[1] and (bb[1].y or bb[1][2])) or -5
+            bb_x2 = (bb[2] and (bb[2].x or bb[2][1])) or  5
+            bb_y2 = (bb[2] and (bb[2].y or bb[2][2])) or  5
+        end
+    else
+        bb_x1, bb_y1, bb_x2, bb_y2 = -5, -5, 5, 5
+    end
+
+    clusterio_api.send_json("ctron_plugin:path_request", {
+        requesterId             = job.job_index,
+        surface                 = job.worker.surface.name,
+        boundingBox             = { x1 = bb_x1, y1 = bb_y1, x2 = bb_x2, y2 = bb_y2 },
+        start                   = { x = params.start.x,  y = params.start.y  },
+        goal                    = { x = params.goal.x,   y = params.goal.y   },
+        force                   = (type(params.force) == "string") and params.force
+                                  or (params.force and params.force.name) or "player",
+        radius                  = params.radius or 1,
+        pathResolutionModifier  = params.path_resolution_modifier or 0,
+    })
+
+    debug_lib.VisualDebugText({"ctron_status.awaiting_pathfinder"}, job.worker, -0.5, 1)
+    log("[ctron_plugin] pathfinder: sent remote path request for job " .. job.job_index)
+end
+
+--- Called by path_plugin.receive_path_response (via callback) when the remote
+--- path instance returns a result.  Synthesises an on_script_path_request_finished-
+--- style event and re-dispatches it through on_path_request_finished.
+---@param decoded table  { id, path, try_again_later, partial, fully_cached }
+function pathfinder.on_remote_path_response(decoded)
+    if not decoded then return end
+
+    local requester_id = decoded.id
+    storage.pathfinder_remote_requests = storage.pathfinder_remote_requests or {}
+    local entry = storage.pathfinder_remote_requests[requester_id]
+    if not entry then return end  -- Not ours, or already handled.
+    local job = entry.job
+
+    storage.pathfinder_remote_requests[requester_id] = nil
+
+    if not (job and job.worker and job.worker.valid) then return end
+
+    if decoded.try_again_later then
+        -- Pathworld is busy — clear the flag so the job will retry from its
+        -- current path_attempt count next time move_to_position fires.
+        job.remote_path_requested = nil
+        return
+    end
+
+    if not decoded.path then
+        -- Terminal: no path exists. Show the indicator and let the job handle
+        -- the no-path state (same visual as the local exhaustion branch).
+        local params = job.path_request_params
+        job.remote_path_requested = nil
+        job.path_request_params = nil
+        debug_lib.VisualDebugText({"ctron_status.no_path_found"}, job.worker, -0.5, 1)
+        debug_lib.VisualDebugLine(
+            params and params.start or job.worker.position,
+            params and params.goal  or job.worker.position,
+            job.worker.surface, "red", 1200)
+        return
+    end
+
+    -- Path found — convert waypoints and feed into the standard success branch.
+    local factorio_path = {}
+    for i, wp in ipairs(decoded.path) do
+        factorio_path[i] = {
+            position              = { x = wp.position.x, y = wp.position.y },
+            needs_destroy_to_reach = false,
+        }
+    end
+
+    -- Temporarily register under the synthetic id so the standard handler can find the job.
+    storage.pathfinder_requests[requester_id] = job
+    job.remote_path_requested = nil
+    pathfinder.on_path_request_finished({
+        id              = requester_id,
+        path            = factorio_path,
+        try_again_later = false,
+        partial         = decoded.partial      or false,
+        fully_cached    = decoded.fully_cached or false,
+    })
+end
+
+-------------------------------------------------------------------------------
+--  Pathworld queue processing
+-------------------------------------------------------------------------------
+
+local REMOTE_PATH_TIMEOUT = 1800 -- 30 seconds
+
+local function send_path_failure(requester_id, source_instance_id)
+    clusterio_api.send_json("ctron_plugin:path_response", {
+        requesterId      = requester_id,
+        sourceInstanceId = source_instance_id,
+        path             = nil,
+        tryAgainLater    = true,
+        partial          = false,
+        fullyCached      = false,
+    })
+end
+
+local function build_path_params(data)
+    local bb = data.boundingBox or {}
+    return {
+        bounding_box    = { { bb.x1 or -5, bb.y1 or -5 }, { bb.x2 or 5, bb.y2 or 5 } },
+        collision_mask  = prototypes.entity["constructron_pathing_proxy_1"].collision_mask,
+        start           = data.start,
+        goal            = data.goal,
+        force           = data.force,
+        radius          = data.radius or 1,
+        path_resolution_modifier = data.pathResolutionModifier or 0,
+        pathfinding_flags = { prefer_straight_paths = true },
+    }
+end
+
+function pathfinder.process_pathworld_queue()
+    if not next(storage.pathworld_request_queue) then return end
+    local queue = storage.pathworld_request_queue
+    storage.pathworld_request_queue = {}
+    log("[ctron_plugin] pathworld: processing " .. table_size(queue) .. " queued path request(s)")
+    for _, data in ipairs(queue) do
+        local surface = game.surfaces[data.surface]
+        if not surface then
+            log("[ctron_plugin] pathworld: surface not found: " .. tostring(data.surface) .. " for requester " .. tostring(data.requesterId))
+            send_path_failure(data.requesterId, data.sourceInstanceId)
+        else
+            -- Build params and call request_path inside pcall so any field error is caught.
+            local ok, request_id = pcall(function()
+                return surface.request_path(build_path_params(data))
+            end)
+            if not ok then
+                log("[ctron_plugin] pathworld: request_path failed for requester " .. tostring(data.requesterId) .. ": " .. tostring(request_id))
+                send_path_failure(data.requesterId, data.sourceInstanceId)
+            else
+                storage.pathworld_pending[request_id] = {
+                    requesterId      = data.requesterId,
+                    sourceInstanceId = data.sourceInstanceId,
+                }
+                log("[ctron_plugin] pathworld: submitted path request " .. request_id .. " for requester " .. tostring(data.requesterId))
+            end
+        end
+    end
+end
+
+function pathfinder.expire_remote_path_requests()
+    -- Expire remote path requests that never received a response (network drop etc.)
+    for job_index, entry in pairs(storage.pathfinder_remote_requests or {}) do
+        if not entry.tick then
+            -- Legacy entry (plain job object) — drop it, the job will re-request if needed.
+            storage.pathfinder_remote_requests[job_index] = nil
+        elseif game.tick - entry.tick >= REMOTE_PATH_TIMEOUT then
+            log("[ctron_plugin] remote path request " .. job_index .. " timed out after " .. (REMOTE_PATH_TIMEOUT / 60) .. "s, retrying locally")
+            storage.pathfinder_remote_requests[job_index] = nil
+            pathfinder.on_remote_path_response({
+                id              = job_index,
+                path            = nil,
+                try_again_later = true,
+                partial         = false,
+                fully_cached    = false,
+            })
+        end
+    end
 end
 
 return pathfinder
