@@ -1,5 +1,22 @@
 local gui_settings = {}
 
+local interactive_types = {
+    textfield = true,
+    checkbox = true,
+    ["choose-elem-button"] = true,
+    button = true,
+    ["drop-down"] = true,
+}
+
+local function set_enabled_recursive(element, enabled)
+    for _, child in pairs(element.children) do
+        if interactive_types[child.type] then
+            child.enabled = enabled
+        end
+        set_enabled_recursive(child, enabled)
+    end
+end
+
 ---comment
 ---@param player LuaPlayer
 ---@param surface LuaSurface
@@ -32,6 +49,10 @@ function gui_settings.buildSettingsGui(player, surface)
     }
 
     gui_settings.buildSettingsContent(player, surface, settings_scroll)
+
+    if storage.ctron_settings_controller_mode then
+        set_enabled_recursive(settings_window, false)
+    end
 end
 
 local toggle_settings = {

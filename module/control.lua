@@ -33,6 +33,71 @@ ctron_plugin_on_path_response = function(json)
     pathfinder.on_remote_path_response(helpers.json_to_table(json))
 end
 
+ctron_plugin_apply_synced_settings = function(json)
+    local data = helpers.json_to_table(json)
+    if not data then return end
+
+    -- Update mode flag (used by UI to block in-game settings when controller is authority)
+    local controller_mode = (data.mode == "controller")
+    storage.ctron_settings_controller_mode = controller_mode
+    -- Close any open settings windows when switching to controller mode
+    if controller_mode then
+        for _, player in pairs(game.players) do
+            if player.gui.screen.ctron_settings_window then
+                player.gui.screen.ctron_settings_window.destroy()
+                player.print("Settings window closed: settings are now managed by the controller.")
+            end
+        end
+    end
+
+    -- Apply global settings
+    if data.global_settings then
+        if data.global_settings.job_start_delay ~= nil then
+            storage.job_start_delay = data.global_settings.job_start_delay
+        end
+        if data.global_settings.debug_toggle ~= nil then
+            storage.debug_toggle = data.global_settings.debug_toggle
+        end
+    end
+
+    -- Apply per-surface settings (keyed by surface name)
+    if data.surface_settings then
+        for surface_name, settings in pairs(data.surface_settings) do
+            local surface = game.surfaces[surface_name]
+            if surface then
+                local si = surface.index
+                if settings.horde_mode ~= nil then storage.horde_mode[si] = settings.horde_mode end
+                if settings.construction_job_toggle ~= nil then storage.construction_job_toggle[si] = settings.construction_job_toggle end
+                if settings.rebuild_job_toggle ~= nil then storage.rebuild_job_toggle[si] = settings.rebuild_job_toggle end
+                if settings.deconstruction_job_toggle ~= nil then storage.deconstruction_job_toggle[si] = settings.deconstruction_job_toggle end
+                if settings.upgrade_job_toggle ~= nil then storage.upgrade_job_toggle[si] = settings.upgrade_job_toggle end
+                if settings.repair_job_toggle ~= nil then storage.repair_job_toggle[si] = settings.repair_job_toggle end
+                if settings.destroy_job_toggle ~= nil then storage.destroy_job_toggle[si] = settings.destroy_job_toggle end
+                if settings.zone_restriction_job_toggle ~= nil then storage.zone_restriction_job_toggle[si] = settings.zone_restriction_job_toggle end
+                if settings.desired_robot_count ~= nil then storage.desired_robot_count[si] = settings.desired_robot_count end
+                if settings.desired_robot_name ~= nil then storage.desired_robot_name[si] = settings.desired_robot_name end
+                if settings.repair_tool_name ~= nil then storage.repair_tool_name[si] = settings.repair_tool_name end
+                if settings.ammo_name ~= nil then storage.ammo_name[si] = settings.ammo_name end
+                if settings.ammo_count ~= nil then storage.ammo_count[si] = settings.ammo_count end
+                if settings.atomic_ammo_name ~= nil then storage.atomic_ammo_name[si] = settings.atomic_ammo_name end
+                if settings.atomic_ammo_count ~= nil then storage.atomic_ammo_count[si] = settings.atomic_ammo_count end
+                if settings.destroy_min_cluster_size ~= nil then storage.destroy_min_cluster_size[si] = settings.destroy_min_cluster_size end
+                if settings.minion_count ~= nil then storage.minion_count[si] = settings.minion_count end
+            end
+        end
+    end
+end
+
+-- Called via RCON on instance startup to report all current surface names to TypeScript.
+-- TypeScript registers them with the controller so the web UI can show per-surface settings.
+ctron_plugin_get_surface_names = function()
+    local names = {}
+    for _, surface in pairs(game.surfaces) do
+        table.insert(names, surface.name)
+    end
+    rcon.print(table.concat(names, ","))
+end
+
 -- Receives a forwarded path request on the pathworld (called via RCON).
 -- We only queue the params here; the actual surface.request_path call happens
 -- inside on_nth_tick so it runs in a proper Factorio event context.
@@ -137,6 +202,10 @@ local ensure_storages = function()
     storage.constructrons_count = storage.constructrons_count or {}
     storage.available_ctron_count = storage.available_ctron_count or {}
     storage.stations_count = storage.stations_count or {}
+    -- settings sync mode flag (set by ctron_plugin_apply_synced_settings via RCON)
+    if storage.ctron_settings_controller_mode == nil then
+        storage.ctron_settings_controller_mode = false
+    end
     -- settings
     storage.horde_mode = storage.horde_mode or {}
     storage.construction_job_toggle = storage.construction_job_toggle or {}
@@ -482,6 +551,12 @@ ctron_plugin.events[ev.on_surface_created] = function(event)
     storage.desired_robot_count[surface_index] = 50
     storage.desired_robot_name[surface_index] = storage.desired_robot_name[1]
     storage.repair_tool_name[surface_index] = storage.repair_tool_name[1]
+
+    -- Notify controller so it creates a default entry for this surface.
+    local surface = game.surfaces[surface_index]
+    if surface then
+        clusterio_api.send_json("ctron_plugin:surface_created", { name = surface.name })
+    end
 end
 
 ctron_plugin.events[ev.on_surface_deleted] = function(event)

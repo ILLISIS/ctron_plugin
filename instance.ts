@@ -69,6 +69,11 @@ type CtronPathRequestIPC = {
 	pathResolutionModifier?: number;
 };
 
+type CtronSettingsChangedIPC = {
+	surface_name: string | null;
+	settings: Record<string, unknown>;
+};
+
 type CtronPathResponseIPC = {
 	requesterId?: number;
 	sourceInstanceId?: number;
@@ -136,6 +141,23 @@ export class InstancePlugin extends BaseInstancePlugin {
 
 		// Controller delivers result -> game Lua via RCON
 		this.instance.handle(messages.CtronReturnPathResponse, this.handleReturnPathResponse.bind(this));
+
+		// Settings sync: game Lua -> controller
+		(this.instance.server as any).on("ipc-ctron_plugin:settings_changed", (data: CtronSettingsChangedIPC) => {
+			this.handleSettingsChangedIPC(data).catch(err => this.logger.error(
+				`Error handling settings_changed:\n${err.stack}`
+			));
+		});
+
+		// Controller -> instance: broadcast settings
+		this.instance.handle(messages.CtronSettingsBroadcast, this.handleSettingsBroadcast.bind(this));
+
+		// New surface created in-game -> register with controller
+		(this.instance.server as any).on("ipc-ctron_plugin:surface_created", (data: { name: string }) => {
+			this.handleSurfaceCreated(data.name).catch(err => this.logger.error(
+				`Error handling surface_created:\n${err.stack}`
+			));
+		});
 	}
 
 	// Called by on_nth_tick_300 Lua handler (via IPC) when running as a subscriber to claim a job from the controller.
@@ -177,6 +199,33 @@ export class InstancePlugin extends BaseInstancePlugin {
 		].join("; ");
 		const result = await this.sendRcon(`/sc ${script}`);
 		this.logger.info(`ctron_plugin init storage rcon result: ${JSON.stringify(result)}`);
+
+		// Register surfaces so the controller creates default entries for any it hasn't seen before.
+		try {
+			const raw = await this.sendRcon("/sc ctron_plugin_get_surface_names()");
+			this.logger.info(`ctron_plugin: surface names RCON raw=${JSON.stringify(raw)}`);
+			const surfaces = raw && raw.trim() ? raw.trim().split(",") : [];
+			this.logger.info(`ctron_plugin: registering surfaces=${JSON.stringify(surfaces)}`);
+			await this.instance.sendTo("controller", new messages.CtronSurfaceRegister(surfaces));
+		} catch (err: any) {
+			this.logger.warn(`Failed to register surfaces with controller: ${err?.stack ?? err}`);
+		}
+
+		// Pull settings from controller and apply
+		try {
+			const pullResult = await this.instance.sendTo("controller", new messages.CtronSettingsPull()) as any;
+			if (pullResult) {
+				const payload = JSON.stringify({
+					surface_settings: pullResult.surfaceSettings ?? {},
+					global_settings: pullResult.globalSettings ?? {},
+					mode: pullResult.mode ?? "in_game",
+				});
+				const rconResult = await this.sendRcon(`/sc ctron_plugin_apply_synced_settings(${JSON.stringify(payload)})`);
+				this.logger.info(`ctron_plugin settings pull applied: ${JSON.stringify(rconResult)}`);
+			}
+		} catch (err: any) {
+			this.logger.warn(`Failed to pull settings from controller: ${err?.stack ?? err}`);
+		}
 	}
 
 	private getInstanceId(fallback?: number) {
@@ -309,6 +358,30 @@ export class InstancePlugin extends BaseInstancePlugin {
 			await this.sendRcon(`/sc ${script}`);
 		} catch (err: any) {
 			this.logger.error(`[ctron_plugin] RCON failed for path response ${event.requesterId}: ${err?.stack ?? err}`);
+		}
+	}
+
+	async handleSettingsChangedIPC(data: CtronSettingsChangedIPC) {
+		const instanceId = this.getInstanceId();
+		const surfaceName = data.surface_name ?? null;
+		const settings = data.settings ?? {};
+		await this.instance.sendTo("controller", new messages.CtronSettingsUpdate(instanceId, surfaceName, settings));
+	}
+
+	async handleSurfaceCreated(name: string) {
+		await this.instance.sendTo("controller", new messages.CtronSurfaceRegister([name]));
+	}
+
+	async handleSettingsBroadcast(event: messages.CtronSettingsBroadcast) {
+		const payload = JSON.stringify({
+			surface_settings: event.surfaceSettings,
+			global_settings: event.globalSettings,
+			mode: event.mode,
+		});
+		try {
+			await this.sendRcon(`/sc ctron_plugin_apply_synced_settings(${JSON.stringify(payload)})`);
+		} catch (err: any) {
+			this.logger.error(`Failed to apply synced settings via RCON: ${err?.stack ?? err}`);
 		}
 	}
 

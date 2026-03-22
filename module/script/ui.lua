@@ -1,5 +1,44 @@
 local debug_lib = require("modules/ctron_plugin/script/debug_lib")
 local util_func = require("modules/ctron_plugin/script/utility_functions")
+local clusterio_api = require("modules/clusterio/api")
+
+local function notify_settings_changed_surface(surface_index)
+    local surface = game.surfaces[surface_index]
+    if not surface then return end
+    local settings = {
+        horde_mode = storage.horde_mode[surface_index],
+        construction_job_toggle = storage.construction_job_toggle[surface_index],
+        rebuild_job_toggle = storage.rebuild_job_toggle[surface_index],
+        deconstruction_job_toggle = storage.deconstruction_job_toggle[surface_index],
+        upgrade_job_toggle = storage.upgrade_job_toggle[surface_index],
+        repair_job_toggle = storage.repair_job_toggle[surface_index],
+        destroy_job_toggle = storage.destroy_job_toggle[surface_index],
+        zone_restriction_job_toggle = storage.zone_restriction_job_toggle[surface_index],
+        desired_robot_count = storage.desired_robot_count[surface_index],
+        desired_robot_name = storage.desired_robot_name[surface_index],
+        repair_tool_name = storage.repair_tool_name[surface_index],
+        ammo_name = storage.ammo_name[surface_index],
+        ammo_count = storage.ammo_count[surface_index],
+        atomic_ammo_name = storage.atomic_ammo_name[surface_index],
+        atomic_ammo_count = storage.atomic_ammo_count[surface_index],
+        destroy_min_cluster_size = storage.destroy_min_cluster_size[surface_index],
+        minion_count = storage.minion_count[surface_index],
+    }
+    clusterio_api.send_json("ctron_plugin:settings_changed", {
+        surface_name = surface.name,
+        settings = settings,
+    })
+end
+
+local function notify_settings_changed_global()
+    clusterio_api.send_json("ctron_plugin:settings_changed", {
+        surface_name = nil,
+        settings = {
+            job_start_delay = storage.job_start_delay,
+            debug_toggle = storage.debug_toggle,
+        },
+    })
+end
 
 local gui_handlers = {}
 
@@ -422,6 +461,9 @@ function gui_handlers.close_main_window(player)
 end
 
 function gui_handlers.open_settings_window(player)
+    if storage.ctron_settings_controller_mode then
+        player.print("Settings are managed by the controller.")
+    end
     local selector = storage.user_interface[player.index].main_ui.elements["surface_selector"]
     local surface_name = selector.items[selector.selected_index]
     local surface = game.surfaces[surface_name]
@@ -680,6 +722,7 @@ function gui_handlers.toggle_job_setting(player, element)
     local setting = element.tags.setting
     local setting_surface = element.tags.setting_surface
     storage[setting .. "_job_toggle"][setting_surface] = not storage[setting .. "_job_toggle"][setting_surface]
+    notify_settings_changed_surface(setting_surface)
     if setting == "rebuild" then return end
     -- if toggling to true, do not cancel jobs
     if storage[setting .. "_job_toggle"][setting_surface] then return end
@@ -699,6 +742,7 @@ end
 function gui_handlers.toggle_zone_restriction(player, element)
     local setting_surface = element.tags.setting_surface
     storage["zone_restriction_job_toggle"][setting_surface] = not storage["zone_restriction_job_toggle"][setting_surface]
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.change_robot_count(player, element)
@@ -709,11 +753,13 @@ function gui_handlers.change_robot_count(player, element)
         count = 50
     end
     storage.desired_robot_count[setting_surface] = count
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.select_new_robot(player, element)
     local setting_surface = element.tags.setting_surface
     storage.desired_robot_name[setting_surface] = element.elem_value
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.selected_new_ammo(player, element)
@@ -742,6 +788,7 @@ function gui_handlers.selected_new_ammo(player, element)
     end
     -- change setting
     storage.ammo_name[setting_surface] = element.elem_value
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.change_ammo_count(player, element)
@@ -759,6 +806,7 @@ function gui_handlers.change_ammo_count(player, element)
             job.required_items[ammo.name] = { [ammo.quality] = count }
         end
     end
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.selected_new_atomic_ammo(player, element)
@@ -787,6 +835,7 @@ function gui_handlers.selected_new_atomic_ammo(player, element)
     end
     -- change setting
     storage.atomic_ammo_name[setting_surface] = element.elem_value
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.change_atomic_ammo_count(player, element)
@@ -797,6 +846,7 @@ function gui_handlers.change_atomic_ammo_count(player, element)
         count = 0
     end
     storage.atomic_ammo_count[setting_surface] = count
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.change_min_cluster_size(player, element)
@@ -807,6 +857,7 @@ function gui_handlers.change_min_cluster_size(player, element)
         count = 8
     end
     storage.destroy_min_cluster_size[setting_surface] = count
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.change_minion_count(player, element)
@@ -817,11 +868,13 @@ function gui_handlers.change_minion_count(player, element)
         count = 0
     end
     storage.minion_count[setting_surface] = count
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.selected_new_repair_tool(player, element)
     local setting_surface = element.tags.setting_surface
     storage.repair_tool_name[setting_surface] = element.elem_value
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.toggle_debug_mode(player, element)
@@ -831,15 +884,18 @@ function gui_handlers.toggle_debug_mode(player, element)
     else
         element.caption = {"ctron_gui_locale.debug_button_off"}
     end
+    notify_settings_changed_global()
 end
 
 function gui_handlers.toggle_horde_mode(player, element)
     local setting_surface = element.tags.setting_surface
     storage.horde_mode[setting_surface] = not storage.horde_mode[setting_surface]
+    notify_settings_changed_surface(setting_surface)
 end
 
 function gui_handlers.change_job_start_delay(player, element)
     storage.job_start_delay = ((tonumber(element.text) or 0) * 60)
+    notify_settings_changed_global()
 end
 
 function gui_handlers.clear_logistic_request(player, element)
@@ -893,6 +949,7 @@ function gui_handlers.apply_settings_template(player, element)
         storage.desired_robot_count[surface_index] = storage.desired_robot_count[current_surface]
         storage.desired_robot_name[surface_index] = storage.desired_robot_name[current_surface]
         storage.repair_tool_name[surface_index] = storage.repair_tool_name[current_surface]
+        notify_settings_changed_surface(surface_index)
     end
 end
 

@@ -56,6 +56,12 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	serviceStationStorageDirty = false;
 	static readonly serviceStationDbFilename = "ctron_service_station_status.json";
 
+	// Constructron settings sync state.
+	ctronSurfaceSettings: Map<string, Record<string, unknown>> = new Map();
+	ctronGlobalSettings: Record<string, unknown> = { ...messages.DEFAULT_GLOBAL_SETTINGS };
+	ctronSettingsDirty = false;
+	static readonly ctronSettingsDbFilename = "ctron_settings.json";
+
 	async init() {
 		this.controller.handle(messages.ConstructronJobAdd, this.handleJobAdd.bind(this));
 		this.controller.handle(messages.ConstructronJobClaim, this.handleJobClaim.bind(this));
@@ -121,6 +127,41 @@ export class ControllerPlugin extends BaseControllerPlugin {
 				this.jobsByKey.set(key, job.id);
 			}
 		}
+
+		// Settings sync handlers
+		this.controller.handle(messages.CtronSurfaceRegister, this.handleSurfaceRegister.bind(this));
+		this.controller.handle(messages.CtronSettingsUpdate, this.handleSettingsUpdate.bind(this));
+		this.controller.handle(messages.CtronSettingsPull, this.handleSettingsPull.bind(this));
+		this.controller.handle(messages.CtronSettingsSet, this.handleSettingsSet.bind(this));
+		this.controller.handle(messages.CtronSettingsGet, this.handleSettingsGet.bind(this));
+
+		// Load persisted settings
+		try {
+			const settingsPath = path.resolve(
+				this.controller.config.get("controller.database_directory"),
+				ControllerPlugin.ctronSettingsDbFilename,
+			);
+			const content = await fs.readFile(settingsPath, "utf-8");
+			if (content.length > 0) {
+				const data = JSON.parse(content);
+				if (data.surfaces) {
+					this.ctronSurfaceSettings = new Map(data.surfaces);
+				}
+				if (data.global) {
+					this.ctronGlobalSettings = { ...messages.DEFAULT_GLOBAL_SETTINGS, ...data.global };
+				}
+			}
+		} catch (err: any) {
+			if (err.code !== "ENOENT") {
+				this.logger.warn(`Failed to load ctron settings: ${err?.message ?? err}`);
+			}
+		}
+	}
+
+	async onControllerConfigFieldChanged(field: string, _curr: unknown, _prev: unknown) {
+		if (field === "ctron_plugin.settings_sync_mode") {
+			this.broadcastSettingsToInstances();
+		}
 	}
 
 	async onSaveData() {
@@ -136,6 +177,18 @@ export class ControllerPlugin extends BaseControllerPlugin {
 				ControllerPlugin.serviceStationDbFilename,
 				this.logger,
 			);
+		}
+		if (this.ctronSettingsDirty) {
+			this.ctronSettingsDirty = false;
+			const data = {
+				surfaces: Array.from(this.ctronSurfaceSettings),
+				global: this.ctronGlobalSettings,
+			};
+			const file = path.resolve(
+				this.controller.config.get("controller.database_directory"),
+				ControllerPlugin.ctronSettingsDbFilename,
+			);
+			await lib.safeOutputFile(file, JSON.stringify(data));
 		}
 	}
 
@@ -394,6 +447,94 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		} catch (err: any) {
 			this.logger.error(`[ctron_plugin] failed to return path response: ${err?.stack ?? err}`);
 		}
+	}
+
+	private broadcastSettingsToInstances(excludeInstanceId?: number) {
+		const surfaceSettings: Record<string, Record<string, unknown>> = {};
+		for (const [name, s] of this.ctronSurfaceSettings) {
+			surfaceSettings[name] = s;
+		}
+		const mode = this.controller.config.get("ctron_plugin.settings_sync_mode");
+		const msg = new messages.CtronSettingsBroadcast(surfaceSettings, this.ctronGlobalSettings, mode);
+		for (const instance of this.controller.instances.values()) {
+			if (instance.id === excludeInstanceId) continue;
+			const assignedHostId = instance.config.get("instance.assigned_host");
+			if (!assignedHostId) continue;
+			const hostConnection = this.controller.wsServer.hostConnections.get(assignedHostId);
+			if (!hostConnection) continue;
+			const dst = lib.Address.fromShorthand({ instanceId: instance.id });
+			try {
+				hostConnection.connector.sendEvent(msg, dst);
+			} catch (err: any) {
+				this.logger.warn(`Failed to broadcast settings to instance ${instance.id}: ${err?.message ?? err}`);
+			}
+		}
+	}
+
+	private storeSettings(surfaceName: string | null, settings: Record<string, unknown>) {
+		if (surfaceName !== null) {
+			const existing = this.ctronSurfaceSettings.get(surfaceName) ?? { ...messages.DEFAULT_SURFACE_SETTINGS };
+			this.ctronSurfaceSettings.set(surfaceName, { ...existing, ...settings });
+		} else {
+			this.ctronGlobalSettings = { ...this.ctronGlobalSettings, ...settings };
+		}
+	}
+
+	async handleSurfaceRegister(event: messages.CtronSurfaceRegister) {
+		this.logger.info(`ctron_plugin: handleSurfaceRegister surfaces=${JSON.stringify(event.surfaces)}`);
+		let dirty = false;
+		for (const name of event.surfaces) {
+			if (!this.ctronSurfaceSettings.has(name)) {
+				this.ctronSurfaceSettings.set(name, { ...messages.DEFAULT_SURFACE_SETTINGS });
+				dirty = true;
+				this.logger.info(`ctron_plugin: registered new surface "${name}"`);
+			}
+		}
+		if (dirty) this.ctronSettingsDirty = true;
+		this.logger.info(`ctron_plugin: ctronSurfaceSettings size=${this.ctronSurfaceSettings.size}`);
+	}
+
+	async handleSettingsUpdate(event: messages.CtronSettingsUpdate) {
+		const mode = this.controller.config.get("ctron_plugin.settings_sync_mode");
+		if (mode !== "in_game") return;
+		this.storeSettings(event.surfaceName, event.settings);
+		this.ctronSettingsDirty = true;
+		this.broadcastSettingsToInstances(event.instanceId);
+	}
+
+	async handleSettingsPull(_event: messages.CtronSettingsPull) {
+		const surfaceSettings: Record<string, Record<string, unknown>> = {};
+		for (const [name, s] of this.ctronSurfaceSettings) {
+			surfaceSettings[name] = s;
+		}
+		const mode = this.controller.config.get("ctron_plugin.settings_sync_mode");
+		return { surfaceSettings, globalSettings: this.ctronGlobalSettings, mode };
+	}
+
+	async handleSettingsSet(event: messages.CtronSettingsSet) {
+		const mode = this.controller.config.get("ctron_plugin.settings_sync_mode");
+		if (mode !== "controller") {
+			throw new Error("Settings sync mode is not 'controller'");
+		}
+		if (event.surfaceName === null) {
+			for (const name of this.ctronSurfaceSettings.keys()) {
+				this.storeSettings(name, event.settings);
+			}
+		} else {
+			this.storeSettings(event.surfaceName, event.settings);
+		}
+		this.ctronSettingsDirty = true;
+		this.broadcastSettingsToInstances();
+		return {};
+	}
+
+	async handleSettingsGet(_event: messages.CtronSettingsGet) {
+		const surfaceSettings: Record<string, Record<string, unknown>> = {};
+		for (const [name, s] of this.ctronSurfaceSettings) {
+			surfaceSettings[name] = s;
+		}
+		const mode = this.controller.config.get("ctron_plugin.settings_sync_mode");
+		return { surfaceSettings, globalSettings: this.ctronGlobalSettings, mode };
 	}
 
 	async handleJobsSubscription(request: lib.SubscriptionRequest) {

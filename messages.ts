@@ -417,3 +417,188 @@ export class InstanceServiceStationStatusStream {
 		return new this(json.updates);
 	}
 }
+
+/**
+ * Hardcoded default values for global constructron settings.
+ * Update here (and in Lua) when adding/removing settings.
+ */
+export const DEFAULT_GLOBAL_SETTINGS = {
+	job_start_delay: 300, // ticks (5 seconds)
+	debug_toggle: false,
+};
+
+/**
+ * Hardcoded default values for per-surface constructron settings.
+ * Update here (and in Lua) when adding/removing settings.
+ */
+export const DEFAULT_SURFACE_SETTINGS = {
+	horde_mode: false,
+	construction_job_toggle: true,
+	rebuild_job_toggle: true,
+	deconstruction_job_toggle: true,
+	upgrade_job_toggle: true,
+	repair_job_toggle: true,
+	destroy_job_toggle: false,
+	zone_restriction_job_toggle: false,
+	desired_robot_count: 50,
+	desired_robot_name: { name: "construction-robot", quality: "normal" },
+	repair_tool_name: { name: "repair-pack", quality: "normal" },
+	ammo_name: { name: "rocket", quality: "normal" },
+	ammo_count: 0,
+	atomic_ammo_name: { name: "atomic-bomb", quality: "normal" },
+	atomic_ammo_count: 0,
+	destroy_min_cluster_size: 8,
+	minion_count: 1,
+};
+
+/**
+ * Event from instance -> controller on startup to register which surfaces exist.
+ * The controller creates entries for new surfaces using hardcoded defaults.
+ */
+export class CtronSurfaceRegister {
+	declare ["constructor"]: typeof CtronSurfaceRegister;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(public surfaces: string[]) { }
+
+	static jsonSchema = Type.Object({
+		surfaces: Type.Array(Type.String()),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(json.surfaces);
+	}
+}
+
+/**
+ * Event from instance -> controller when a player changes constructron settings in-game.
+ */
+export class CtronSettingsUpdate {
+	declare ["constructor"]: typeof CtronSettingsUpdate;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(
+		public instanceId: number,
+		public surfaceName: string | null,
+		public settings: Record<string, unknown>,
+	) { }
+
+	static jsonSchema = Type.Object({
+		instanceId: Type.Number(),
+		surfaceName: Type.Union([Type.String(), Type.Null()]),
+		settings: Type.Record(Type.String(), Type.Unknown()),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(json.instanceId, json.surfaceName, json.settings as Record<string, unknown>);
+	}
+}
+
+/**
+ * Event from controller -> instance broadcasting settings to all instances.
+ */
+export class CtronSettingsBroadcast {
+	declare ["constructor"]: typeof CtronSettingsBroadcast;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(
+		public surfaceSettings: Record<string, Record<string, unknown>>,
+		public globalSettings: Record<string, unknown>,
+		public mode: string,
+	) { }
+
+	static jsonSchema = Type.Object({
+		surfaceSettings: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())),
+		globalSettings: Type.Record(Type.String(), Type.Unknown()),
+		mode: Type.String(),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(
+			json.surfaceSettings as Record<string, Record<string, unknown>>,
+			json.globalSettings as Record<string, unknown>,
+			json.mode,
+		);
+	}
+}
+
+/**
+ * Request from instance -> controller to pull current settings on startup.
+ */
+export class CtronSettingsPull {
+	declare ["constructor"]: typeof CtronSettingsPull;
+	static type = "request" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor() { }
+
+	static jsonSchema = Type.Object({});
+
+	static fromJSON(_json: Static<typeof this.jsonSchema>) { return new this(); }
+
+	static Response = plainJson(Type.Object({
+		surfaceSettings: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())),
+		globalSettings: Type.Record(Type.String(), Type.Unknown()),
+		mode: Type.String(),
+	}));
+}
+
+/**
+ * Request from control -> controller to set settings via web UI (controller authority mode).
+ */
+export class CtronSettingsSet {
+	declare ["constructor"]: typeof CtronSettingsSet;
+	static type = "request" as const;
+	static src = "control" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_plugin" as const;
+	static permission = "ctron_plugin.settings.write";
+
+	constructor(public surfaceName: string | null, public settings: Record<string, unknown>) { }
+
+	static jsonSchema = Type.Object({
+		surfaceName: Type.Union([Type.String(), Type.Null()]),
+		settings: Type.Record(Type.String(), Type.Unknown()),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(json.surfaceName, json.settings as Record<string, unknown>);
+	}
+
+	static Response = plainJson(Type.Object({}));
+}
+
+/**
+ * Request from control -> controller to get current settings.
+ */
+export class CtronSettingsGet {
+	declare ["constructor"]: typeof CtronSettingsGet;
+	static type = "request" as const;
+	static src = "control" as const;
+	static dst = "controller" as const;
+	static permission = "ctron_plugin.settings.write";
+	static plugin = "ctron_plugin" as const;
+
+	constructor() { }
+
+	static jsonSchema = Type.Object({});
+
+	static fromJSON(_json: Static<typeof this.jsonSchema>) { return new this(); }
+
+	static Response = plainJson(Type.Object({
+		surfaceSettings: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())),
+		globalSettings: Type.Record(Type.String(), Type.Unknown()),
+		mode: Type.String(),
+	}));
+}
