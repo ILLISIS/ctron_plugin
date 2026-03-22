@@ -45,8 +45,6 @@ export const plugin: lib.PluginDeclaration = {
 		messages.ConstructronJobConsume,
 		messages.ConstructronJobRemove,
 		messages.ConstructronJobUpdate,
-		messages.ConstructronJobRoute,
-		messages.ConstructronJobDeliver,
 		messages.CtronPathRequest,
 		messages.CtronForwardPathRequest,
 		messages.CtronPathResponse,

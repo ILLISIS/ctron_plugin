@@ -144,8 +144,6 @@ end
 local ensure_storages = function()
     storage.ctron_plugin = storage.ctron_plugin or {
         station_count = 0,
-        queued_jobs = {},
-        queued_constructrons = {}
     }
     storage.mod_mode = storage.mod_mode or {
         ["publisher"] = true,
@@ -600,8 +598,6 @@ end
 
 -- Clusterio Events
 
-ctron_plugin.on_nth_tick[30] = function(event) clusterio_handler.on_nth_tick_30(event) end
-
 ctron_plugin.on_nth_tick[300] = function(event) clusterio_handler.on_nth_tick_300(event) end
 
 -- Entity events
@@ -610,7 +606,6 @@ ctron_plugin.events[ev.on_built_entity] = entity_proc.on_built_entity
 
 ctron_plugin.events[ev.script_raised_built] = function(event)
     entity_proc.on_built_entity(event)
-    clusterio_handler.script_built(event)
 end
 
 ctron_plugin.events[ev.on_robot_built_entity] = entity_proc.on_built_entity
@@ -885,5 +880,57 @@ end
 --     ["set-ctron-color"] = set_ctron_color,
 --     ["remove-job"] = remove_job,
 -- })
+
+-- Universal edges serialization hooks: embed/restore job data when constructrons cross edges
+local ue_hooks = require("modules/universal_edges/universal_serializer/hooks")
+
+-- Embed job data in serialized constructron entity
+ue_hooks.register("LuaEntity", "post_serialize", function(entity_data, context)
+    local entity = context.entity
+    if not (entity and entity.valid) then return end
+    if not storage.constructron_names[entity.name] then return end
+
+    for _, job in pairs(storage.jobs) do
+        if job.worker and (job.worker.unit_number == entity.unit_number) then
+            local station_data = {
+                    position = table.deepcopy(job.station.position),
+                    valid = true,
+                    logistic_network = {}
+                }
+            entity_data.ctron_job = {
+                job_type = job.job_type,
+                state = job.state,
+                sub_state = job.sub_state,
+                surface_index = job.surface_index,
+                chunks = job.chunks,
+                required_items = job.required_items,
+                trash_items = job.trash_items,
+                station = station_data,
+                task_positions = job.task_positions,
+                landfill_job = job.landfill_job,
+                roboports_enabled = job.roboports_enabled,
+                job_status = job.job_status,
+                deffered_tick = job.deffered_tick,
+            }
+            -- Safe to remove here — entity.destroy() is called immediately after serialization
+            storage.jobs[job.job_index] = nil
+            break
+        end
+    end
+    return entity_data
+end)
+
+-- Restore job when constructron arrives on the other side
+ue_hooks.register("LuaEntity", "post_deserialize", function(entity_data, context)
+    local entity = context.entity
+    if not (entity and entity.valid) then return end
+    if not entity_data.ctron_job then return end
+
+    -- Use the destination entity's surface index, not the source's
+    local job = entity_data.ctron_job
+    job.surface_index = entity.surface.index
+
+    clusterio_handler.transmute_job(job, entity)
+end)
 
 return ctron_plugin

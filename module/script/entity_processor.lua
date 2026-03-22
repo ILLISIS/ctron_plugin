@@ -300,7 +300,6 @@ end
 
 entity_proc.script_raised_destroy = function(event)
     entity_proc.on_object_destroyed(event)
-    clusterio_handler.script_removed(event)
 end
 
 entity_proc.on_sector_scanned = function(event)

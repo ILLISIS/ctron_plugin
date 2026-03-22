@@ -45,14 +45,6 @@ type ConstructronJobConsumeIPC = {
 	job_key?: string;
 };
 
-type ConstructronJobRouteIPC = {
-	source_instance_id?: number;
-	destination_instance_id?: number;
-	job_type?: string;
-	job?: unknown;
-	job_key?: string;
-};
-
 type ServiceStationCountIPC = {
 	instance_id?: number;
 	service_station_count?: number;
@@ -101,12 +93,6 @@ export class InstancePlugin extends BaseInstancePlugin {
 				`Error handling job_consume:\n${err.stack}`
 			));
 		});
-		(this.instance.server as any).on("ipc-ctron_plugin:job_route", (data: ConstructronJobRouteIPC) => {
-			this.handleJobRoute(data).catch(err => this.logger.error(
-				`Error handling job_route:\n${err.stack}`
-			));
-		});
-
 		(this.instance.server as any).on("ipc-ctron_plugin:job_claim", () => {
 			this.claimJobFromController().catch(err => this.logger.error(
 				`Error handling job_claim:\n${err.stack}`
@@ -118,9 +104,6 @@ export class InstancePlugin extends BaseInstancePlugin {
 				`Error handling service_station_count:\n${err.stack}`
 			));
 		});
-
-		// Controller -> host -> instance message delivery
-		this.instance.handle(messages.ConstructronJobDeliver, this.handleJobDeliver.bind(this));
 
 		// Path request: game Lua -> controller -> pathworld
 		(this.instance.server as any).on("ipc-ctron_plugin:path_request", (data: CtronPathRequestIPC) => {
@@ -263,27 +246,6 @@ export class InstancePlugin extends BaseInstancePlugin {
 		await this.instance.sendTo("controller", new messages.ConstructronJobConsume(instanceId, jobKey));
 	}
 
-	async handleJobRoute(data: ConstructronJobRouteIPC) {
-		const sourceInstanceId = this.getInstanceId(data.source_instance_id);
-		const destinationInstanceId = data.destination_instance_id;
-		const jobType = data.job_type ?? "";
-		const job = data.job;
-		const jobKey = data.job_key;
-
-		if (destinationInstanceId == null) {
-			this.logger.warn("Ignoring job_route without destination_instance_id");
-			return;
-		}
-
-		this.logger.info(
-			`Forwarding ConstructronJobRoute(source=${sourceInstanceId}, dest=${destinationInstanceId}, type=${jobType})`,
-		);
-		await this.instance.sendTo(
-			"controller",
-			new messages.ConstructronJobRoute(sourceInstanceId, destinationInstanceId, jobType, job, jobKey),
-		);
-	}
-
 	async handleServiceStationCount(data: ServiceStationCountIPC) {
 		const instanceId = this.getInstanceId(data.instance_id);
 		const count = Number.isFinite(data.service_station_count as any) ? Number(data.service_station_count) : 0;
@@ -385,32 +347,4 @@ export class InstancePlugin extends BaseInstancePlugin {
 		}
 	}
 
-	async handleJobDeliver(event: messages.ConstructronJobDeliver) {
-		// Cache delivered job in save storage; Factorio Lua will apply it when the matching constructron spawns.
-		this.logger.info(
-			`Received ConstructronJobDeliver(jobKey=${event.jobKey}, source=${event.sourceInstanceId}, dest=${event.destinationInstanceId}, type=${event.jobType})`,
-		);
-		if (!event.jobKey) {
-			this.logger.warn("Ignoring job_deliver without jobKey");
-			return;
-		}
-
-		const escapedKey = JSON.stringify(event.jobKey);
-		const jobType = JSON.stringify(event.jobType ?? null);
-		const jobJson = JSON.stringify(event.job ?? null);
-
-		const script = [
-			// Store job as JSON string. Do NOT attempt to parse in /sc.
-			`storage.ctron_plugin.queued_jobs[${escapedKey}] = { ok = true, job_type = ${jobType}, job_json = ${JSON.stringify(jobJson)} }`,
-			"rcon.print('ctron_plugin: queued job stored for ' .. " + escapedKey + ")",
-		].join("; ");
-
-		try {
-			this.logger.info(`Storing queued job via rcon for key=${event.jobKey}`);
-			const result = await this.sendRcon(`/sc ${script}`);
-			this.logger.info(`RCON store result for jobKey=${event.jobKey}: ${JSON.stringify(result)}`);
-		} catch (err: any) {
-			this.logger.error(`Failed to store queued job for jobKey=${event.jobKey}: ${err?.stack ?? err}`);
-		}
-	}
 }

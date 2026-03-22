@@ -24,26 +24,6 @@ clusterio_handler.job_types = {
 -- Main functions
 --------------------------------------------------------------------
 
--- periodically try to assign queued constructrons to their jobs
-clusterio_handler.on_nth_tick_30 = function()
-	for job_key, worker in pairs(storage.ctron_plugin.queued_constructrons or {}) do
-		if not storage.ctron_plugin.queued_jobs[job_key] then return end
-		local queued_entry = storage.ctron_plugin.queued_jobs[job_key]
-		if not (worker and worker.valid and worker.logistic_cell) then return end
-
-		-- Decode the job from its JSON string representation.
-		local job = helpers.json_to_table(queued_entry.job_json) --[[@as table]]
-		if not job then
-			log("[ctron_plugin] failed to decode job JSON")
-			return
-		end
-		log("----- Job key is: " .. job_key)
-		clusterio_handler.transmute_job(job, worker)
-		storage.ctron_plugin.queued_constructrons[job_key] = nil
-		storage.ctron_plugin.queued_jobs[job_key] = nil
-	end
-end
-
 -- periodically send / receive new jobs to / from the controller
 clusterio_handler.on_nth_tick_300 = function()
 	if storage.mod_mode["publisher"] then -- send to controller
@@ -107,8 +87,10 @@ clusterio_handler.transmute_job = function(job, worker)
 		new_job.job_index = new_job_index
 		new_job.worker = worker
 		new_job.worker_unit_number = worker.unit_number
-		new_job.worker_logistic_cell = worker.logistic_cell
-		new_job.worker_logistic_network = worker.logistic_cell.logistic_network
+		if worker.logistic_cell then
+			new_job.worker_logistic_cell = worker.logistic_cell
+			new_job.worker_logistic_network = worker.logistic_cell.logistic_network
+		end
 		new_job.worker_inventory = worker.get_inventory(defines.inventory.spider_trunk)
 		new_job.worker_ammo_slots = worker.get_inventory(defines.inventory.spider_ammo)
 		new_job.worker_trash_inventory = worker.get_inventory(defines.inventory.spider_trash)
@@ -161,134 +143,6 @@ clusterio_handler.station_removed = function()
 		service_station_count = storage.ctron_plugin.station_count,
 	}
 	clusterio_api.send_json("ctron_plugin:service_station_count", payload)
-end
-
-clusterio_handler.script_built = function(event)
-	local entity = event.created_entity or event.entity
-	if not (entity and entity.valid) then return end
-	if storage.constructron_names[entity.name] then
-		log("[ctron_plugin] constructron built")
-		local job_key = clusterio_handler.calculate_job_key(entity)
-		log("----- Job key is: " .. job_key)
-		storage.ctron_plugin.queued_constructrons[job_key] = entity
-	end
-end
-
-clusterio_handler.script_removed = function(event)
-	local entity = event.entity
-	if not (entity and entity.valid) then return end
-	if not storage.constructron_names[entity.name] then return end
-	log("[ctron_plugin] constructron removed")
-	local job_key = clusterio_handler.calculate_job_key(entity)
-	log("----- Job key is: " .. job_key)
-	-- get ctron job
-	local outgoing_job
-	for _, job in pairs(storage.jobs) do
-		if job.worker and (job.worker.unit_number == entity.unit_number) then
-			outgoing_job = job
-			break
-		end
-	end
-	if outgoing_job then
-		-- sythesize job.station
-		outgoing_job.station = {
-			position = table.deepcopy(outgoing_job.station.position),
-			valid = true,
-			logistic_network = {}
-		}
-		local payload = {
-			source_instance_id = storage.universal_edges.config.instance_id,
-			destination_instance_id = clusterio_handler.get_destination_instance_id_for_entity(entity),
-			job_type = outgoing_job.job_type,
-			job = outgoing_job,
-			job_key = job_key,
-		}
-		-- send job to clusterio controller
-		clusterio_api.send_json("ctron_plugin:job_route", payload)
-		-- remove job from storage.jobs
-		storage.jobs[outgoing_job.job_index] = nil
-	end
-end
-
---------------------------------------------------------------------
--- Helper functions
---------------------------------------------------------------------
-
----@param entity LuaEntity
----@return string
-clusterio_handler.calculate_job_key = function(entity)
-	local pos = entity.position
-	local surface_index = (entity.surface and entity.surface.index) or nil
-	-- round to reduce floating differences
-	return string.format("%d|%.2f,%.2f", surface_index, pos.x, pos.y)
-end
-
--- Find the closest active universal edge and return the remote instance id.
----@param entity LuaEntity
----@return number? destination_instance_id
-clusterio_handler.get_destination_instance_id_for_entity = function(entity)
-	if not (storage and storage.universal_edges and storage.universal_edges.edges) then
-		return nil
-	end
-
-	local best_edge = nil
-	local best_dist2 = nil
-
-	local ex = entity.position.x
-	local ey = entity.position.y
-	local surface_name = entity.surface.name
-
-	for _edge_id, edge in pairs(storage.universal_edges.edges) do
-		if edge.active then
-			local local_target = nil
-			if storage.universal_edges.config and storage.universal_edges.config.instance_id == edge.source.instanceId then
-				local_target = edge.source
-			else
-				local_target = edge.target
-			end
-			if local_target and local_target.surface == surface_name then
-				-- Edge coordinate space: [x along edge, y distance from edge]
-				local dx = ex - local_target.origin[1]
-				local dy = ey - local_target.origin[2]
-
-				-- Rotate by -direction to align with edge space
-				local dir = local_target.direction % 16
-				local rx, ry = dx, dy
-				if dir == 4 then
-					rx, ry = dy, -dx
-				elseif dir == 8 then
-					rx, ry = -dx, -dy
-				elseif dir == 12 then
-					rx, ry = -dy, dx
-				end
-
-				-- Clamp along edge segment [0, length]
-				local cx = rx
-				if cx < 0 then cx = 0 end
-				if cx > edge.length then cx = edge.length end
-
-				local ddx = rx - cx
-				local ddy = ry
-				local dist2 = ddx * ddx + ddy * ddy
-				if not best_dist2 or dist2 < best_dist2 then
-					best_dist2 = dist2
-					best_edge = edge
-				end
-			end
-		end
-	end
-
-	if not best_edge then
-		return nil
-	end
-
-	-- Destination is the remote target for this edge
-	local local_instance_id = storage.universal_edges.config and storage.universal_edges.config.instance_id
-	if local_instance_id == best_edge.source.instanceId then
-		return best_edge.target.instanceId
-	else
-		return best_edge.source.instanceId
-	end
 end
 
 return clusterio_handler

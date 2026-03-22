@@ -107,37 +107,6 @@ export class ConstructronJobUpdate {
 }
 
 /**
- * Event from instance -> controller to announce a job that should be routed to a destination instance.
- */
-export class ConstructronJobRoute {
-	declare ["constructor"]: typeof ConstructronJobRoute;
-	static type = "event" as const;
-	static src = "instance" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(
-		public sourceInstanceId: number,
-		public destinationInstanceId: number,
-		public jobType: string,
-		public job: unknown,
-		public jobKey?: string,
-	) { }
-
-	static jsonSchema = Type.Object({
-		sourceInstanceId: Type.Number(),
-		destinationInstanceId: Type.Number(),
-		jobType: Type.String(),
-		job: Type.Unknown(),
-		jobKey: Type.Optional(Type.String()),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.sourceInstanceId, json.destinationInstanceId, json.jobType, json.job, json.jobKey);
-	}
-}
-
-/**
  * Request from instance -> controller to atomically claim one pending job.
  * Returns the claimed job or null if none are available.
  */
@@ -166,37 +135,6 @@ export class ConstructronJobClaim {
 		}),
 		Type.Null(),
 	]));
-}
-
-/**
- * Event from controller -> instance delivering a routed job to a destination instance.
- */
-export class ConstructronJobDeliver {
-	declare ["constructor"]: typeof ConstructronJobDeliver;
-	static type = "event" as const;
-	static src = "controller" as const;
-	static dst = "instance" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(
-		public sourceInstanceId: number,
-		public destinationInstanceId: number,
-		public jobType: string,
-		public job: unknown,
-		public jobKey?: string,
-	) { }
-
-	static jsonSchema = Type.Object({
-		sourceInstanceId: Type.Number(),
-		destinationInstanceId: Type.Number(),
-		jobType: Type.String(),
-		job: Type.Unknown(),
-		jobKey: Type.Optional(Type.String()),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.sourceInstanceId, json.destinationInstanceId, json.jobType, json.job, json.jobKey);
-	}
 }
 
 /** Bounding box serialised for cross-instance path requests. */

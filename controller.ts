@@ -67,7 +67,6 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		this.controller.handle(messages.ConstructronJobClaim, this.handleJobClaim.bind(this));
 		this.controller.handle(messages.ConstructronJobConsume, this.handleJobConsume.bind(this));
 		this.controller.handle(messages.ConstructronJobRemove, this.handleJobRemove.bind(this));
-		this.controller.handle(messages.ConstructronJobRoute, this.handleJobRoute.bind(this));
 		this.controller.handle(messages.CtronPathRequest, this.handleCtronPathRequest.bind(this));
 		this.controller.handle(messages.CtronPathResponse, this.handleCtronPathResponse.bind(this));
 		this.controller.subscriptions.handle(messages.ConstructronJobUpdate, this.handleJobsSubscription.bind(this));
@@ -334,50 +333,6 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		this.jobsById.set(event.jobId, updated);
 		this.storageDirty = true;
 		this.broadcast([updated]);
-	}
-
-	async handleJobRoute(event: messages.ConstructronJobRoute) {
-		const instance = this.controller.instances.get(event.destinationInstanceId);
-		if (!instance) {
-			this.logger.warn(`Dropping routed Constructron job: destination instance ${event.destinationInstanceId} not found`);
-			return;
-		}
-
-		const assignedHostId = instance.config.get("instance.assigned_host");
-		if (assignedHostId === null) {
-			this.logger.warn(
-				`Dropping routed Constructron job: destination instance ${event.destinationInstanceId} is not assigned to a host`,
-			);
-			return;
-		}
-
-		const hostConnection = this.controller.wsServer.hostConnections.get(assignedHostId);
-		if (!hostConnection) {
-			this.logger.warn(
-				`Dropping routed Constructron job: destination host ${assignedHostId} is offline (instance=${event.destinationInstanceId})`,
-			);
-			return;
-		}
-
-		this.logger.info(
-			`Routing Constructron job from ${event.sourceInstanceId} -> ${event.destinationInstanceId} (type=${event.jobType})`,
-		);
-
-		const dst = lib.Address.fromShorthand({ instanceId: event.destinationInstanceId });
-		const deliver = new messages.ConstructronJobDeliver(
-			event.sourceInstanceId,
-			event.destinationInstanceId,
-			event.jobType,
-			event.job,
-			event.jobKey,
-		);
-
-		try {
-			const seq = hostConnection.connector.sendEvent(deliver, dst);
-			this.logger.info(`ConstructronJobDeliver forwarded to host ${assignedHostId} (seq=${seq}) dst=${dst}`);
-		} catch (err: any) {
-			this.logger.error(`Failed to forward ConstructronJobDeliver to host ${assignedHostId}: ${err?.stack ?? err}`);
-		}
 	}
 
 	private getPathworldInstanceId(): number | undefined {
