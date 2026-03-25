@@ -57,6 +57,7 @@ export const plugin: lib.PluginDeclaration = {
 		messages.CtronSettingsPull,
 		messages.CtronSettingsSet,
 		messages.CtronSettingsGet,
+		messages.CtronSubscriberAvailabilityBroadcast,
 	],
 
 	webEntrypoint: "./web",

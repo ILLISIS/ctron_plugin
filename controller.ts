@@ -56,6 +56,9 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	serviceStationStorageDirty = false;
 	static readonly serviceStationDbFilename = "ctron_service_station_status.json";
 
+	// Whether any instance currently has subscribers (service stations).
+	hasSubscribers = false;
+
 	// Constructron settings sync state.
 	ctronSurfaceSettings: Map<string, Record<string, unknown>> = new Map();
 	ctronGlobalSettings: Record<string, unknown> = { ...messages.DEFAULT_GLOBAL_SETTINGS };
@@ -115,6 +118,8 @@ export class ControllerPlugin extends BaseControllerPlugin {
 			initial.push(status);
 		}
 		this.broadcastServiceStationStatus([...this.serviceStationStatusByInstance.values()]);
+		this.hasSubscribers = this.computeHasSubscribers();
+		this.broadcastSubscriberAvailability();
 
 		this.jobsById = await loadDatabase(this.controller.config, ControllerPlugin.dbFilename, this.logger);
 		// Rebuild key index
@@ -203,6 +208,29 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		}
 	}
 
+	private computeHasSubscribers(): boolean {
+		for (const status of this.serviceStationStatusByInstance.values()) {
+			if (status.isSubscriber) return true;
+		}
+		return false;
+	}
+
+	private broadcastSubscriberAvailability() {
+		const msg = new messages.CtronSubscriberAvailabilityBroadcast(this.hasSubscribers);
+		for (const instance of this.controller.instances.values()) {
+			const assignedHostId = instance.config.get("instance.assigned_host");
+			if (!assignedHostId) continue;
+			const hostConnection = this.controller.wsServer.hostConnections.get(assignedHostId);
+			if (!hostConnection) continue;
+			const dst = lib.Address.fromShorthand({ instanceId: instance.id });
+			try {
+				hostConnection.connector.sendEvent(msg, dst);
+			} catch (err: any) {
+				this.logger.warn(`Failed to broadcast subscriber availability to instance ${instance.id}: ${err?.message ?? err}`);
+			}
+		}
+	}
+
 	async handleInstanceServiceStationStatusUpdate(event: messages.InstanceServiceStationStatusUpdate) {
 		const now = Date.now();
 		const count = Math.max(0, Math.floor(event.serviceStationCount));
@@ -218,6 +246,12 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		this.serviceStationStatusByInstance.set(event.instanceId, status);
 		this.serviceStationStorageDirty = true;
 		this.broadcastServiceStationStatus([status]);
+
+		const newHasSubscribers = this.computeHasSubscribers();
+		if (newHasSubscribers !== this.hasSubscribers) {
+			this.hasSubscribers = newHasSubscribers;
+			this.broadcastSubscriberAvailability();
+		}
 	}
 
 	async handleInstanceServiceStationStatusSubscription(request: lib.SubscriptionRequest) {
@@ -463,7 +497,7 @@ export class ControllerPlugin extends BaseControllerPlugin {
 			surfaceSettings[name] = s;
 		}
 		const mode = this.controller.config.get("ctron_plugin.settings_sync_mode");
-		return { surfaceSettings, globalSettings: this.ctronGlobalSettings, mode };
+		return { surfaceSettings, globalSettings: this.ctronGlobalSettings, mode, hasSubscribers: this.hasSubscribers };
 	}
 
 	async handleSettingsSet(event: messages.CtronSettingsSet) {

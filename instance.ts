@@ -135,6 +135,9 @@ export class InstancePlugin extends BaseInstancePlugin {
 		// Controller -> instance: broadcast settings
 		this.instance.handle(messages.CtronSettingsBroadcast, this.handleSettingsBroadcast.bind(this));
 
+		// Controller -> instance: broadcast subscriber availability
+		this.instance.handle(messages.CtronSubscriberAvailabilityBroadcast, this.handleSubscriberAvailabilityBroadcast.bind(this));
+
 		// New surface created in-game -> register with controller
 		(this.instance.server as any).on("ipc-ctron_plugin:surface_created", (data: { name: string }) => {
 			this.handleSurfaceCreated(data.name).catch(err => this.logger.error(
@@ -205,6 +208,14 @@ export class InstancePlugin extends BaseInstancePlugin {
 				});
 				const rconResult = await this.sendRcon(`/sc ctron_plugin_apply_synced_settings(${JSON.stringify(payload)})`);
 				this.logger.info(`ctron_plugin settings pull applied: ${JSON.stringify(rconResult)}`);
+
+				// Apply subscriber availability from the pull response
+				const subValue = pullResult.hasSubscribers ? "true" : "false";
+				try {
+					await this.sendRcon(`/sc ctron_plugin_set_subscriber_availability(${subValue})`);
+				} catch (err: any) {
+					this.logger.warn(`Failed to set subscriber availability on startup: ${err?.stack ?? err}`);
+				}
 			}
 		} catch (err: any) {
 			this.logger.warn(`Failed to pull settings from controller: ${err?.stack ?? err}`);
@@ -344,6 +355,15 @@ export class InstancePlugin extends BaseInstancePlugin {
 			await this.sendRcon(`/sc ctron_plugin_apply_synced_settings(${JSON.stringify(payload)})`);
 		} catch (err: any) {
 			this.logger.error(`Failed to apply synced settings via RCON: ${err?.stack ?? err}`);
+		}
+	}
+
+	async handleSubscriberAvailabilityBroadcast(event: messages.CtronSubscriberAvailabilityBroadcast) {
+		const value = event.hasSubscribers ? "true" : "false";
+		try {
+			await this.sendRcon(`/sc ctron_plugin_set_subscriber_availability(${value})`);
+		} catch (err: any) {
+			this.logger.error(`Failed to set subscriber availability via RCON: ${err?.stack ?? err}`);
 		}
 	}
 

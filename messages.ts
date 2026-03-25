@@ -357,6 +357,27 @@ export class InstanceServiceStationStatusStream {
 }
 
 /**
+ * Event from controller -> instance broadcasting subscriber availability.
+ */
+export class CtronSubscriberAvailabilityBroadcast {
+	declare ["constructor"]: typeof CtronSubscriberAvailabilityBroadcast;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_plugin" as const;
+
+	constructor(public hasSubscribers: boolean) { }
+
+	static jsonSchema = Type.Object({
+		hasSubscribers: Type.Boolean(),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(json.hasSubscribers);
+	}
+}
+
+/**
  * Hardcoded default values for global constructron settings.
  * Update here (and in Lua) when adding/removing settings.
  */
@@ -489,6 +510,7 @@ export class CtronSettingsPull {
 		surfaceSettings: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())),
 		globalSettings: Type.Record(Type.String(), Type.Unknown()),
 		mode: Type.String(),
+		hasSubscribers: Type.Boolean(),
 	}));
 }
 

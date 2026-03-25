@@ -51,6 +51,7 @@ job_proc.process_queues = function(surface_index)
     local is_subscriber = storage.mod_mode["subscriber"]
     local has_available = storage.available_ctron_count[surface_index] > 0
     if not (is_publisher or (is_subscriber and has_available)) then return end
+    if is_publisher and not storage.ctron_plugin.has_subscribers then return end
     for job_type, job_class in pairs(job_proc.job_types) do
         job_proc.process_queue(surface_index, job_type, job_class)
     end

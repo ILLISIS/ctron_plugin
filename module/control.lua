@@ -88,6 +88,10 @@ ctron_plugin_apply_synced_settings = function(json)
     end
 end
 
+ctron_plugin_set_subscriber_availability = function(value)
+    storage.ctron_plugin.has_subscribers = (value == true)
+end
+
 -- Called via RCON on instance startup to report all current surface names to TypeScript.
 -- TypeScript registers them with the controller so the web UI can show per-surface settings.
 ctron_plugin_get_surface_names = function()
@@ -144,7 +148,11 @@ end
 local ensure_storages = function()
     storage.ctron_plugin = storage.ctron_plugin or {
         station_count = 0,
+        has_subscribers = false,
     }
+    if storage.ctron_plugin.has_subscribers == nil then
+        storage.ctron_plugin.has_subscribers = false
+    end
     storage.mod_mode = storage.mod_mode or {
         ["publisher"] = true,
         ["subscriber"] = false
