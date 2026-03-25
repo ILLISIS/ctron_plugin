@@ -63,6 +63,5 @@ export const plugin: lib.PluginDeclaration = {
 	webEntrypoint: "./web",
 	routes: [
 		"/ctron_plugin",
-		"/ctron_plugin/settings",
 	],
 };

@@ -4,9 +4,7 @@ import { BaseWebPlugin, ControlContext } from "@clusterio/web_ui";
 import * as lib from "@clusterio/lib";
 
 import * as messages from "../messages";
-import JobsPage from "./pages/JobsPage";
 import InstanceRolesPage from "./pages/InstanceRolesPage";
-import SettingsPage from "./pages/SettingsPage";
 
 export class WebPlugin extends BaseWebPlugin {
 	subscriber!: lib.EventSubscriber<typeof messages.ConstructronJobUpdate>;
@@ -18,15 +16,9 @@ export class WebPlugin extends BaseWebPlugin {
 		this.pages = [
 			{
 				path: "/ctron_plugin",
-				sidebarName: "Clustructron",
+				sidebarName: "Constructron",
 				permission: "ctron_plugin.jobs.read",
 				content: <InstanceRolesPage />,
-			},
-			{
-				path: "/ctron_plugin/settings",
-				sidebarName: "Ctron Settings",
-				permission: "ctron_plugin.settings.write",
-				content: <SettingsPage />,
 			},
 		];
 	}

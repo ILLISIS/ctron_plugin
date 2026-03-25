@@ -2,7 +2,7 @@ import * as path from "path";
 import * as fs from "fs/promises";
 
 import * as lib from "@clusterio/lib";
-import { BaseControllerPlugin } from "@clusterio/controller";
+import { BaseControllerPlugin, InstanceInfo } from "@clusterio/controller";
 
 import * as messages from "./messages";
 
@@ -100,7 +100,6 @@ export class ControllerPlugin extends BaseControllerPlugin {
 
 		// Seed default status for instances we don't have persisted entries for.
 		const now = Date.now();
-		const initial: messages.InstanceServiceStationStatus[] = [];
 		for (const instance of this.controller.instances.values()) {
 			const instanceId = instance.id;
 			if (this.serviceStationStatusByInstance.has(instanceId)) {
@@ -115,7 +114,6 @@ export class ControllerPlugin extends BaseControllerPlugin {
 				isSubscriber: false,
 			};
 			this.serviceStationStatusByInstance.set(instanceId, status);
-			initial.push(status);
 		}
 		this.broadcastServiceStationStatus([...this.serviceStationStatusByInstance.values()]);
 		this.hasSubscribers = this.computeHasSubscribers();
@@ -165,6 +163,43 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	async onControllerConfigFieldChanged(field: string, _curr: unknown, _prev: unknown) {
 		if (field === "ctron_plugin.settings_sync_mode") {
 			this.broadcastSettingsToInstances();
+		}
+	}
+
+	async onInstanceStatusChanged(instance: InstanceInfo, _prev?: lib.InstanceStatus) {
+		const instanceId = instance.id;
+		if (instance.status === "deleted") {
+			const existing = this.serviceStationStatusByInstance.get(instanceId);
+			if (existing) {
+				const tombstone: messages.InstanceServiceStationStatus = {
+					...existing,
+					updatedAtMs: Date.now(),
+					isDeleted: true,
+					serviceStationCount: 0,
+					isSubscriber: false,
+				};
+				this.serviceStationStatusByInstance.delete(instanceId);
+				this.serviceStationStorageDirty = true;
+				this.broadcastServiceStationStatus([tombstone]);
+
+				const newHasSubscribers = this.computeHasSubscribers();
+				if (newHasSubscribers !== this.hasSubscribers) {
+					this.hasSubscribers = newHasSubscribers;
+					this.broadcastSubscriberAvailability();
+				}
+			}
+		} else if (!this.serviceStationStatusByInstance.has(instanceId)) {
+			const status: messages.InstanceServiceStationStatus = {
+				id: `instance:${instanceId}`,
+				updatedAtMs: Date.now(),
+				isDeleted: false,
+				instanceId,
+				serviceStationCount: 0,
+				isSubscriber: false,
+			};
+			this.serviceStationStatusByInstance.set(instanceId, status);
+			this.serviceStationStorageDirty = true;
+			this.broadcastServiceStationStatus([status]);
 		}
 	}
 

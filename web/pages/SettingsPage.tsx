@@ -17,7 +17,7 @@ type SettingsState = {
 	mode: string;
 };
 
-export default function SettingsPage() {
+export default function SettingsPage({ embedded }: { embedded?: boolean }) {
 	const control = useContext(ControlContext);
 	const [state, setState] = useState<SettingsState | null>(null);
 	const [selectedSurface, setSelectedSurface] = useState<string>("(global)");
@@ -125,27 +125,22 @@ export default function SettingsPage() {
 
 	const disabled = !isControllerMode;
 
-	return (
-		<PageLayout nav={[{ name: "Constructron Settings" }]}>
+	const content = (
+		<>
 			{contextHolder}
-			<PageHeader
-				title="Constructron Settings"
-				extra={
-					<Space>
-						<Tooltip title="Toggle between in-game player control and web UI (controller) control">
-							<Switch
-								checked={isControllerMode}
-								loading={togglingMode}
-								onChange={toggleMode}
-								disabled={loading || state === null}
-								checkedChildren="Controller"
-								unCheckedChildren="In-game"
-							/>
-						</Tooltip>
-						<Button loading={loading} onClick={fetchSettings}>Refresh</Button>
-					</Space>
-				}
-			/>
+			<Space style={{ marginBottom: 8 }}>
+				<Tooltip title="Toggle between in-game player control and web UI (controller) control">
+					<Switch
+						checked={isControllerMode}
+						loading={togglingMode}
+						onChange={toggleMode}
+						disabled={loading || state === null}
+						checkedChildren="Controller"
+						unCheckedChildren="In-game"
+					/>
+				</Tooltip>
+				<Button loading={loading} onClick={fetchSettings} size="small">Refresh</Button>
+			</Space>
 			{!loading && !isControllerMode && (
 				<Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
 					Settings are currently managed in-game by players. Use the toggle above to switch to controller authority.
@@ -255,6 +250,17 @@ export default function SettingsPage() {
 					</Form.Item>
 				)}
 			</Form>
+		</>
+	);
+
+	if (embedded) {
+		return <div style={{ padding: 16 }}>{content}</div>;
+	}
+
+	return (
+		<PageLayout nav={[{ name: "Constructron Settings" }]}>
+			<PageHeader title="Constructron Settings" />
+			{content}
 		</PageLayout>
 	);
 }
