@@ -2,6 +2,7 @@
 local debug_lib = require("modules/ctron_plugin/script/debug_lib")
 local util_func = require("modules/ctron_plugin/script/utility_functions")
 local clusterio_api = require("modules/clusterio/api")
+local trace = require("modules/ctron_plugin/script/trace")
 
 local job = require("modules/ctron_plugin/script/job")
 local construction_job = require("modules/ctron_plugin/script/job/construction")
@@ -47,13 +48,13 @@ job_proc.job_types = {
 
 ---@param surface_index uint
 job_proc.process_queues = function(surface_index)
-    local is_publisher = storage.mod_mode["publisher"]
-    local is_subscriber = storage.mod_mode["subscriber"]
-    local has_available = storage.available_ctron_count[surface_index] > 0
-    if not (is_publisher or (is_subscriber and has_available)) then return end
-    if is_publisher and not storage.ctron_plugin.has_subscribers then return end
+    -- v2 (spec §8): a surface with stations here is a subscriber surface: its jobs are made here, with a worker. Any
+    -- other is a publisher surface: its jobs go to the controller, while some instance subscribes on that surface.
+    local subscriber = (storage.stations_count[surface_index] or 0) > 0
+    if subscriber and not (storage.available_ctron_count[surface_index] > 0) then return end
+    if not subscriber and not storage.ctron_plugin.subscribed[game.surfaces[surface_index].name] then return end
     for job_type, job_class in pairs(job_proc.job_types) do
-        job_proc.process_queue(surface_index, job_type, job_class)
+        job_proc.process_queue(surface_index, job_type, job_class, subscriber)
     end
 end
 
@@ -61,14 +62,15 @@ end
 ---@param surface_index uint
 ---@param job_type string
 ---@param job_class job
-job_proc.process_queue = function(surface_index, job_type, job_class)
+---@param subscriber boolean this instance subscribes on the surface (spec §8)
+job_proc.process_queue = function(surface_index, job_type, job_class, subscriber)
     local job_start_delay = storage.job_start_delay
     for _, chunk in pairs(storage[job_type .. '_queue'][surface_index]) do
         if ((game.tick - chunk.last_update_tick) > job_start_delay) then
             if job.find_chunk_entities(chunk, job_type) then
                 -- find a worker to perform the prospective job
                 local worker
-                if storage.mod_mode["subscriber"] then
+                if subscriber then
                     worker = job.get_worker(surface_index)
                     if not (worker and worker.valid) then break end
                 end
@@ -87,16 +89,14 @@ job_proc.process_queue = function(surface_index, job_type, job_class)
                 if not storage.horde_mode[surface_index] then
                     new_job:claim_chunks_in_proximity()
                 end
-                if storage.mod_mode["publisher"] then
-                    -- send the new job to the clusterio controller
-                    log("[ctron_plugin] publishing new job to clusterio controller")
-                    local payload = {
-                        instance_id = clusterio_api.get_instance_id(),
-                        job_type = new_job.job_type,
-                        job = new_job,
-                        job_key = new_job.key,
-                    }
-                    clusterio_api.send_json("ctron_plugin:job_add", payload)
+                if not subscriber then
+                    -- v2 (spec §8): to the controller, for an instance subscribed on this surface's name to claim
+                    local surface_name = game.surfaces[surface_index].name
+                    new_job.surface_name = surface_name
+                    clusterio_api.send_json("ctron_plugin:job_add", {
+                        job_key = new_job.key, job_type = new_job.job_type, surface_name = surface_name, job = new_job,
+                    })
+                    trace.send("ctron.pool", "published", "info", new_job, { surface = surface_name })
                 else
                     storage.jobs[job_index] = new_job
                 end

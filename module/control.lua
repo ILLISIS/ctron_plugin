@@ -84,8 +84,13 @@ ctron_plugin_apply_synced_settings = function(json)
     end
 end
 
-ctron_plugin_set_subscriber_availability = function(value)
-    storage.ctron_plugin.has_subscribers = (value == true)
+-- Called via RCON by instance.ts: the surface names some instance has stations on (spec §8). A publisher surface sends
+-- its jobs to the controller only while its name is here.
+ctron_plugin_set_subscribed_surfaces = function(json)
+    storage.ctron_plugin.subscribed = {}
+    for _, name in pairs(helpers.json_to_table(json)) do
+        storage.ctron_plugin.subscribed[name] = true
+    end
 end
 
 -- Called via RCON on instance startup to report all current surface names to TypeScript.
@@ -125,17 +130,9 @@ end
 --===========================================================================--
 
 local ensure_storages = function()
-    storage.ctron_plugin = storage.ctron_plugin or {
-        station_count = 0,
-        has_subscribers = false,
-    }
-    if storage.ctron_plugin.has_subscribers == nil then
-        storage.ctron_plugin.has_subscribers = false
-    end
-    storage.mod_mode = storage.mod_mode or {
-        ["publisher"] = true,
-        ["subscriber"] = false
-    }
+    -- v2 (spec §8): the mode is per surface (stations_count), not instance-wide
+    storage.ctron_plugin = storage.ctron_plugin or {}
+    storage.ctron_plugin.subscribed = storage.ctron_plugin.subscribed or {}
     --
     storage.constructron_names = storage.constructron_names or { ["constructron"] = true, ["constructron-rocket-powered"] = true}
     storage.station_names = storage.station_names or { ["service_station"] = true }

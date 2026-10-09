@@ -1,5 +1,6 @@
 local clusterio_api = require("modules/clusterio/api")
 local border = require("modules/ctron_plugin/script/border")
+local trace = require("modules/ctron_plugin/script/trace")
 
 local construction_job = require("modules/ctron_plugin/script/job/construction")
 local deconstruction_job = require("modules/ctron_plugin/script/job/deconstruction")
@@ -25,16 +26,17 @@ clusterio_handler.job_types = {
 -- Main functions
 --------------------------------------------------------------------
 
--- periodically send / receive new jobs to / from the controller
+-- v2 (spec §8, §14 Q5): claim a job for this instance's subscriber surfaces that have an idle constructron
 clusterio_handler.on_nth_tick_300 = function()
-	if storage.mod_mode["publisher"] then -- send to controller
-		for job_index, job in pairs(storage.jobs) do
-			if job.state == "setup" then
-				
-			end
+	local surfaces = {}
+	for _, surface in pairs(game.surfaces) do
+		local s = surface.index
+		if (storage.stations_count[s] or 0) > 0 and (storage.available_ctron_count[s] or 0) > 0 then
+			surfaces[#surfaces + 1] = surface.name
 		end
-	elseif storage.mod_mode["subscriber"] then -- pull from controller
-		clusterio_api.send_json("ctron_plugin:job_claim", {})
+	end
+	if next(surfaces) then
+		clusterio_api.send_json("ctron_plugin:job_claim", { surfaces = surfaces })
 	end
 end
 
@@ -47,8 +49,9 @@ clusterio_handler.on_job_claimed = function(job_json)
 		log("[ctron_plugin] on_job_claimed: failed to decode job_json")
 		return
 	end
-	log (serpent.block(job))
-	clusterio_handler.transmute_job(job, nil, job.surface_index)
+	-- v2 (spec §8): the publisher's surface index means nothing here; its surface name maps the job and its chunks
+	local new_job = clusterio_handler.transmute_job(job, nil, game.surfaces[job.surface_name].index)
+	trace.send("ctron.pool", "claimed", "info", new_job, { surface = job.surface_name })
 end
 
 -- This is where we would handle any necessary transformations of job data
@@ -123,38 +126,18 @@ clusterio_handler.transmute_job = function(job, worker, surface_index)
 	return new_job
 end
 
--- update station count and inform clusterio controller when a station is built
-clusterio_handler.station_built = function(entity)
-	if storage.station_names[entity.name] then
-		log("[ctron_plugin] service station built")
-		storage.ctron_plugin.station_count = storage.ctron_plugin.station_count + 1
-		if storage.ctron_plugin.station_count > 0 then
-			log("[ctron_plugin] service stations available, switching to subscriber mode")
-			storage.mod_mode["publisher"] = false
-			storage.mod_mode["subscriber"] = true
+-- v2 (spec §8): this instance's service stations by surface name, to the controller, whenever one is built or removed
+clusterio_handler.send_stations = function()
+	local stations = {}
+	for _, surface in pairs(game.surfaces) do
+		local count = storage.stations_count[surface.index] or 0
+		if count > 0 then
+			stations[surface.name] = count
 		end
-		local payload = {
-			instance_id = clusterio_api.get_instance_id(),
-			service_station_count = storage.ctron_plugin.station_count,
-		}
-		clusterio_api.send_json("ctron_plugin:service_station_count", payload)
 	end
+	clusterio_api.send_json("ctron_plugin:stations", { stations = stations })
 end
-
--- update station count and inform clusterio controller when a station is removed
-clusterio_handler.station_removed = function()
-	log("[ctron_plugin] service station removed")
-	storage.ctron_plugin.station_count = math.max(0, storage.ctron_plugin.station_count - 1)
-	if storage.ctron_plugin.station_count == 0 then
-		log("[ctron_plugin] no service stations available, switching to publisher mode")
-		storage.mod_mode["publisher"] = true
-		storage.mod_mode["subscriber"] = false
-	end
-	local payload = {
-		instance_id = clusterio_api.get_instance_id(),
-		service_station_count = storage.ctron_plugin.station_count,
-	}
-	clusterio_api.send_json("ctron_plugin:service_station_count", payload)
-end
+clusterio_handler.station_built = clusterio_handler.send_stations
+clusterio_handler.station_removed = clusterio_handler.send_stations
 
 return clusterio_handler
