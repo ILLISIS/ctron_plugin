@@ -1,6 +1,6 @@
 if not script.active_mods["Constructron-Continued"] then
     log("[ctron_plugin] Disabled as Constructron-Continued mod not enabled")
-    return
+    return {} -- v2 (spec §14 Q2): an empty lib, so the module loads and does nothing (event_handler.add_lib needs a table)
 end
 
 log("[ctron_plugin] enabled")
@@ -888,57 +888,5 @@ end
 --     ["set-ctron-color"] = set_ctron_color,
 --     ["remove-job"] = remove_job,
 -- })
-
--- Universal edges serialization hooks: embed/restore job data when constructrons cross edges
-local ue_hooks = require("modules/universal_edges/universal_serializer/hooks")
-
--- Embed job data in serialized constructron entity
-ue_hooks.register("LuaEntity", "post_serialize", function(entity_data, context)
-    local entity = context.entity
-    if not (entity and entity.valid) then return end
-    if not storage.constructron_names[entity.name] then return end
-
-    for _, job in pairs(storage.jobs) do
-        if job.worker and (job.worker.unit_number == entity.unit_number) then
-            local station_data = {
-                    position = table.deepcopy(job.station.position),
-                    valid = true,
-                    logistic_network = {}
-                }
-            entity_data.ctron_job = {
-                job_type = job.job_type,
-                state = job.state,
-                sub_state = job.sub_state,
-                surface_index = job.surface_index,
-                chunks = job.chunks,
-                required_items = job.required_items,
-                trash_items = job.trash_items,
-                station = station_data,
-                task_positions = job.task_positions,
-                landfill_job = job.landfill_job,
-                roboports_enabled = job.roboports_enabled,
-                job_status = job.job_status,
-                deffered_tick = job.deffered_tick,
-            }
-            -- Safe to remove here — entity.destroy() is called immediately after serialization
-            storage.jobs[job.job_index] = nil
-            break
-        end
-    end
-    return entity_data
-end)
-
--- Restore job when constructron arrives on the other side
-ue_hooks.register("LuaEntity", "post_deserialize", function(entity_data, context)
-    local entity = context.entity
-    if not (entity and entity.valid) then return end
-    if not entity_data.ctron_job then return end
-
-    -- Use the destination entity's surface index, not the source's
-    local job = entity_data.ctron_job
-    job.surface_index = entity.surface.index
-
-    clusterio_handler.transmute_job(job, entity)
-end)
 
 return ctron_plugin
