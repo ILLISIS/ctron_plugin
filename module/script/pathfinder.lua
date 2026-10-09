@@ -1,5 +1,6 @@
 local debug_lib = require("modules/ctron_plugin/script/debug_lib")
 local util_func = require("modules/ctron_plugin/script/utility_functions")
+local border = require("modules/ctron_plugin/script/border")
 
 -------------------------------------------------------------------------------
 --  Init
@@ -96,6 +97,7 @@ pathfinder.on_path_request_finished = function(event)
         job.path_request_params = nil
         -- request path from game engine
         pathfinder.set_autopilot(job.worker, path)
+        border.watch(job) -- v2 (spec §6.4): back on UE's watch, now with an autopilot
         if job.landfill_job and job.custom_path then
             for _, waypoint in ipairs(job.custom_path) do
                 job.worker.add_autopilot_destination(waypoint.position)

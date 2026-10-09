@@ -2,6 +2,7 @@ local util_func = require("modules/ctron_plugin/script/utility_functions")
 local debug_lib = require("modules/ctron_plugin/script/debug_lib")
 local pathfinder = require("modules/ctron_plugin/script/pathfinder")
 local entity_proc = require("modules/ctron_plugin/script/entity_processor")
+local border = require("modules/ctron_plugin/script/border")
 local clusterio_api = require("modules/clusterio/api")
 
 -- class for jobs
@@ -322,6 +323,12 @@ end
 function job:move_to_position(position)
     local worker = self.worker
     if not worker or not worker.valid then return end
+    -- v2 (spec §6.4): a goal on another tile is reached hop by hop, through P on this tile's border, or not yet (a
+    -- wait). A minion follows its leader on this tile, as in CC.
+    if self.job_type ~= "minion" then
+        position = border.goal(self, position)
+        if not position then return end
+    end
     local distance = util_func.distance_between(worker.position, position)
     worker.grid.inhibit_movement_bonus = (distance < 32)
 
@@ -641,8 +648,9 @@ function job:position_check(position, distance)
     local worker = self.worker ---@cast worker -nil
     -- Calculate the distance from the worker's current position to the target position
     local distance_from_pos = util_func.distance_between(worker.position, position)
-    -- Check if the distance from the target position exceeds the allowed distance
-    if distance_from_pos > distance then
+    -- Check if the distance from the target position exceeds the allowed distance; v2 (spec §6.4): a goal on another
+    -- tile is never reached here, however near it is across the line
+    if distance_from_pos > distance or border.off_tile(worker, position) then
         -- Update the job status to indicate the worker is moving
         self.job_status = {"ctron_status.moving_to_pos"}
         -- If the worker does not have an autopilot destination set

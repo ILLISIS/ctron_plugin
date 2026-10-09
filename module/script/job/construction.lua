@@ -1,6 +1,7 @@
 local job = require("modules/ctron_plugin/script/job")
 local debug_lib = require("modules/ctron_plugin/script/debug_lib")
 local util_func = require("modules/ctron_plugin/script/utility_functions")
+local border = require("modules/ctron_plugin/script/border")
 
 -- sub class for construction jobs
 local construction_job = setmetatable({}, job_metatable) ---@class construction_job : job
@@ -17,7 +18,7 @@ end
 function construction_job:position_check(position, distance)
     local worker = self.worker ---@cast worker -nil
     local distance_from_pos = util_func.distance_between(worker.position, position)
-    if distance_from_pos > distance then
+    if distance_from_pos > distance or border.off_tile(worker, position) then -- v2 (spec §6.4), as job:position_check
         debug_lib.VisualDebugText({"ctron_status.moving_to_pos"}, worker, -1, 1)
         self.job_status = {"ctron_status.moving_to_pos"}
         if not worker.autopilot_destination then
