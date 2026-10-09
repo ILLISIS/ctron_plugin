@@ -43,13 +43,16 @@ export function subscribedSurfaces(statuses: Iterable<InstanceServiceStationStat
 	return [...names].sort();
 }
 
-/** The cargo requests other instances published on `surfaces` (research §3): a tile never serves its own. */
-export function cargoOffers(jobs: Iterable<ConstructronJobValue>, surfaces: string[], instanceId: number) {
+/**
+ * The open cargo requests on `surfaces` (research §3), the asker's own included: the asking tile claims one only if a
+ * single station of its own supplies all of it (clusterio_handler.on_cargo_offers), so a request published in a brief
+ * shortage is served locally once the tile restocks.
+ */
+export function cargoOffers(jobs: Iterable<ConstructronJobValue>, surfaces: string[]) {
 	const offers = [];
 	for (const job of jobs) {
 		const body = job.job as any;
-		if (!job.isDeleted && job.jobType === "cargo" && surfaces.includes(job.surfaceName)
-			&& (body?.requester ?? job.lastInstanceId) !== instanceId) {
+		if (!job.isDeleted && job.jobType === "cargo" && surfaces.includes(job.surfaceName)) {
 			offers.push({
 				key: job.id,
 				surfaceName: job.surfaceName,

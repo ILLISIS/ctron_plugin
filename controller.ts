@@ -235,7 +235,7 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	}
 
 	async handleCargoOffers(event: messages.ConstructronCargoOffers) {
-		return { offers: cargoOffers(this.jobs.values(), event.surfaces, event.instanceId) };
+		return { offers: cargoOffers(this.jobs.values(), event.surfaces) };
 	}
 
 	async handleJobAdd(event: messages.ConstructronJobAdd) {

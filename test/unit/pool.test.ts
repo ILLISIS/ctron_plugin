@@ -51,20 +51,20 @@ test("a blind claim never takes a cargo request", () => {
 	assert.equal(oldestOn([cargo("2|1", "nauvis", 1)], ["nauvis"], now), undefined);
 });
 
-test("offers: open cargo requests on the asker's surfaces, not its own", () => {
+test("offers: open cargo requests on the asker's surfaces, its own included", () => {
 	const jobs = [
 		cargo("1|1", "nauvis", 1), cargo("1|2", "gleba", 1), cargo("2|1", "nauvis", 2), cargo("1|3", "nauvis", 1, true),
 	];
-	assert.deepEqual(cargoOffers(jobs, ["nauvis"], 2), [{
-		key: "1|1", surfaceName: "nauvis", position: { x: 1, y: 2 }, items: { "iron-plate": { normal: 20 } },
-	}]);
+	const items = { "iron-plate": { normal: 20 } };
+	assert.deepEqual(cargoOffers(jobs, ["nauvis"]).map(o => o.key), ["1|1", "2|1"]);
+	assert.deepEqual(cargoOffers(jobs, ["nauvis"])[0],
+		{ key: "1|1", surfaceName: "nauvis", position: { x: 1, y: 2 }, items });
 });
 
-test("a split remainder published by B for requester A is offered to B, not to A", () => {
+test("a request is offered to whoever asks, its requester too (the claimer's supply check decides)", () => {
 	const rest = { ...cargo("2|5", "nauvis", 2),
 		job: { requester: 1, task_positions: [{ x: 1, y: 2 }], required_items: {} } };
-	assert.equal(cargoOffers([rest], ["nauvis"], 2).length, 1);
-	assert.equal(cargoOffers([rest], ["nauvis"], 1).length, 0);
+	assert.equal(cargoOffers([rest], ["nauvis"]).length, 1);
 });
 
 test("a claim by key finds that entry while it is open", () => {
