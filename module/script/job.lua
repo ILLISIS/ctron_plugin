@@ -2,6 +2,7 @@ local util_func = require("modules/ctron_plugin/script/utility_functions")
 local debug_lib = require("modules/ctron_plugin/script/debug_lib")
 local pathfinder = require("modules/ctron_plugin/script/pathfinder")
 local entity_proc = require("modules/ctron_plugin/script/entity_processor")
+local clusterio_api = require("modules/clusterio/api")
 
 -- class for jobs
 local job = {} ---@class job
@@ -16,6 +17,8 @@ script.register_metatable("ctron_job_metatable", job_metatable)
 function job.new(job_index, surface_index, job_type, worker)
     local instance = setmetatable({}, job_metatable)
     instance.job_index = job_index         -- the global index of the job
+    -- v2 (spec §8): "<instance id>|<job index>", kept through claims and crossings, so log lines correlate across tiles
+    instance.key = tostring(clusterio_api.get_instance_id()) .. "|" .. job_index
     instance.state = "setup"               -- the state of the job
     instance.sub_state = nil               -- secondary state that can be used to achieve something within a particular state
     instance.job_type = job_type           -- the type of action the job will take i.e construction
@@ -187,7 +190,7 @@ local find_entities = {
 }
 
 function job:check_roboport_coverage(entity)
-    local networks = entity.surface.find_logistic_networks_by_construction_area(entity.position, game.players[1].force)
+    local networks = entity.surface.find_logistic_networks_by_construction_area(entity.position, game.forces["player"])
     if next(networks) then return true end
     return false
 end
@@ -235,7 +238,7 @@ function job:claim_chunk(chunk)
     -- check for chunk overload
     local total_required_slots = util_func.calculate_required_inventory_slot_count(util_func.combine_tables { self.required_items, chunk.required_items, chunk.trash_items })
     if total_required_slots > self.empty_slot_count then
-        local divisor = math.ceil(total_required_slots / (self.empty_slot_count - 5)) -- minus 5 slots to account for rounding up of items and trash
+        local divisor = math.ceil(total_required_slots / math.max(1, self.empty_slot_count - 5)) -- minus 5 slots to account for rounding up of items and trash
         for item, value in pairs(chunk.required_items) do
             for quality, count in pairs(value) do
                 chunk.required_items[item] = {
@@ -348,7 +351,6 @@ function job:move_to_position(position)
 
     if distance > 12 then
         if self.pathfinding then return end
-        if self.remote_path_requested then return end
         if self.landfill_job and not self.custom_path and (self.state == "in_progress") then
             worker.enable_logistics_while_moving = true
             self:disable_roboports(1)
@@ -780,7 +782,7 @@ function job:check_items_are_available()
     local logistic_network = self.station.logistic_network
     for request_name, value in pairs(current_requests) do
         for quality, count in pairs(value) do
-            if logistic_network.can_satisfy_request({name = request_name, quality = quality}, count, true) then
+            if count > 0 and logistic_network.can_satisfy_request({name = request_name, quality = quality}, count, true) then
                 return true
             end
         end
@@ -809,11 +811,9 @@ function job:check_roaming_candidate(station, current_items, current_requests)
     if not station_logistic_network then return false end
     for request_name, value in pairs(current_requests) do
         for quality, count in pairs(value) do
-            local needed_count = count
-            if current_items[request_name] and current_items[request_name][quality] then
-                needed_count = count - current_items[request_name][quality]
-            end
-            if station_logistic_network.can_satisfy_request({name = request_name, quality = quality}, needed_count, true) then
+            local held = (current_items[request_name] and current_items[request_name][quality]) or 0
+            local needed_count = count - held
+            if needed_count > 0 and station_logistic_network.can_satisfy_request({name = request_name, quality = quality}, needed_count, true) then
                 debug_lib.VisualDebugText({"ctron_status.trying_diff_station"}, self.worker, 0, 5)
                 self.sub_state = nil
                 self.station = station
@@ -1021,12 +1021,13 @@ function job:check_ammo_count()
     local ammo = storage.ammo_name[self.surface_index]
     local ammo_name = ammo.name
     local ammo_quality = ammo.quality
-    -- Check if the current ammo count is more than 25% of the expected ammo count.
-    -- If the ammo count is less than or equal to 25%, update the job state to "starting" and return false.
-    if not (ammunition and ammunition[ammo_name] and (ammunition[ammo_name][ammo_quality] > (math.ceil(ammo_count * 25 / 100)))) then
-        -- Additional check in worker inventory for extra ammo
+    -- start a restock if less than 25% of the expected ammo is present, in either the slots or the trunk
+    local threshold = math.ceil(ammo_count * 25 / 100)
+    local ammo_in_slots = ammunition[ammo_name] and ammunition[ammo_name][ammo_quality]
+    if not (ammo_in_slots and ammo_in_slots > threshold) then
         local inventory_ammo = util_func.convert_to_item_list(self.worker_inventory.get_contents())
-        if not (inventory_ammo and inventory_ammo[ammo_name] and (inventory_ammo[ammo_name][ammo_quality] > (math.ceil(ammo_count * 25 / 100)))) then
+        local ammo_in_inventory = inventory_ammo[ammo_name] and inventory_ammo[ammo_name][ammo_quality]
+        if not (ammo_in_inventory and ammo_in_inventory > threshold) then
             self.state = "starting"
             return false
         end
@@ -1196,7 +1197,8 @@ function job:finishing()
     util_func.set_constructron_status(worker, 'busy', false)
     -- change selected constructron colour
     util_func.paint_constructron(worker, 'idle')
-
+    -- clear autopilot_destination (for minion jobs)
+    worker.autopilot_destination = nil
     -- release vassals
     for _, vassal_job in pairs((self.vassal_jobs or {})) do
         vassal_job.state = "finishing"

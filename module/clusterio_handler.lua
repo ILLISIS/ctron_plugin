@@ -122,7 +122,7 @@ clusterio_handler.station_built = function(entity)
 			storage.mod_mode["subscriber"] = true
 		end
 		local payload = {
-			instance_id = storage.universal_edges.config.instance_id,
+			instance_id = clusterio_api.get_instance_id(),
 			service_station_count = storage.ctron_plugin.station_count,
 		}
 		clusterio_api.send_json("ctron_plugin:service_station_count", payload)
@@ -139,7 +139,7 @@ clusterio_handler.station_removed = function()
 		storage.mod_mode["subscriber"] = false
 	end
 	local payload = {
-		instance_id = storage.universal_edges.config.instance_id,
+		instance_id = clusterio_api.get_instance_id(),
 		service_station_count = storage.ctron_plugin.station_count,
 	}
 	clusterio_api.send_json("ctron_plugin:service_station_count", payload)

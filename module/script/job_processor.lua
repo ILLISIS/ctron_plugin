@@ -87,22 +87,21 @@ job_proc.process_queue = function(surface_index, job_type, job_class)
                 if not storage.horde_mode[surface_index] then
                     new_job:claim_chunks_in_proximity()
                 end
-                if job_type == "destroy" then
-                    break -- to allow minion assignment
-                end
                 if storage.mod_mode["publisher"] then
                     -- send the new job to the clusterio controller
                     log("[ctron_plugin] publishing new job to clusterio controller")
-                    local job_key = tostring(storage.universal_edges.config.instance_id) .. "|" .. tostring(job_index)
                     local payload = {
-                        instance_id = storage.universal_edges.config.instance_id,
+                        instance_id = clusterio_api.get_instance_id(),
                         job_type = new_job.job_type,
                         job = new_job,
-                        job_key = job_key,
+                        job_key = new_job.key,
                     }
                     clusterio_api.send_json("ctron_plugin:job_add", payload)
                 else
                     storage.jobs[job_index] = new_job
+                end
+                if job_type == "destroy" then
+                    break -- to allow minion assignment
                 end
             else
                 -- clear the chunk from the queue

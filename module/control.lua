@@ -28,11 +28,6 @@ ctron_plugin_on_job_claimed = function(job_json)
     clusterio_handler.on_job_claimed(job_json)
 end
 
--- Delivers a remote path result to this game instance (called via RCON).
-ctron_plugin_on_path_response = function(json)
-    pathfinder.on_remote_path_response(helpers.json_to_table(json))
-end
-
 ctron_plugin_apply_synced_settings = function(json)
     local data = helpers.json_to_table(json)
     if not data then return end
@@ -102,30 +97,13 @@ ctron_plugin_get_surface_names = function()
     rcon.print(table.concat(names, ","))
 end
 
--- Receives a forwarded path request on the pathworld (called via RCON).
--- We only queue the params here; the actual surface.request_path call happens
--- inside on_nth_tick so it runs in a proper Factorio event context.
-ctron_plugin_pathworld_on_path_request = function(json)
-    local data = helpers.json_to_table(json)
-    if not data then return end
-    storage.is_pathworld = true
-    storage.pathworld_request_queue = storage.pathworld_request_queue or {}
-    table.insert(storage.pathworld_request_queue, data)
-    log("[ctron_plugin] pathworld: queued path request params for requester " .. tostring(data.requesterId))
-end
-
 --===========================================================================--
 -- Main workers
 --===========================================================================--
 
 ctron_plugin.on_nth_tick[90] = function()
-    if storage.is_pathworld then
-        pathfinder.process_pathworld_queue()
-    else
-        job_proc.process_job_queue()
-        gui_handlers.update_ui_windows()
-        pathfinder.expire_remote_path_requests()
-    end
+    job_proc.process_job_queue()
+    gui_handlers.update_ui_windows()
 end
 
 -- cleanup
@@ -172,10 +150,6 @@ local ensure_storages = function()
     storage.pathfinder_requests = storage.pathfinder_requests or {}
     storage.custom_pathfinder_index = storage.custom_pathfinder_index or 0
     storage.custom_pathfinder_requests = storage.custom_pathfinder_requests or {}
-    storage.pathfinder_remote_requests = storage.pathfinder_remote_requests or {} -- tracks outgoing path requests sent to pathworld; expired in expire_remote_path_requests()
-    storage.is_pathworld = storage.is_pathworld or false -- set true on first RCON call to ctron_plugin_pathworld_on_path_request; gates process_pathworld_queue()
-    storage.pathworld_pending = storage.pathworld_pending or {} -- maps request_id -> requester info while pathworld awaits on_script_path_request_finished
-    storage.pathworld_request_queue = storage.pathworld_request_queue or {} -- RCON-queued path requests; drained each tick by process_pathworld_queue()
     storage.mainland_chunks = storage.mainland_chunks or {}
     storage.max_pathfinder_iterations = storage.max_pathfinder_iterations or 200
     --
@@ -510,7 +484,7 @@ ctron_plugin.events[ev.on_lua_shortcut] = function (event)
     end
 end
 
----@param event EventData.on_custom_input
+---@param event EventData.CustomInputEvent
 ctron_plugin.events["ctron-get-selection-tool"] = function (event)
     local name = event.input_name
     if name ~= "ctron-get-selection-tool" then return end
@@ -618,7 +592,7 @@ end
 
 ctron_plugin.events[ev.on_robot_built_entity] = entity_proc.on_built_entity
 
-ctron_plugin.events[ev.on_post_entity_died] = entity_proc.on_post_entity_died
+ctron_plugin.events[ev.on_post_entity_died] = entity_proc.on_ghost_entity_died
 
 ctron_plugin.events[ev.on_marked_for_deconstruction] = entity_proc.on_marked_for_deconstruction
 
@@ -640,7 +614,7 @@ ctron_plugin.events[ev.on_player_selected_area] = entity_proc.on_player_selected
 
 ctron_plugin.events[ev.on_player_reverse_selected_area] = entity_proc.on_player_reverse_selected_area
 
-ctron_plugin.events[ev.on_player_alt_selected_area] = entity_proc.on_player_alt_selected_area
+ctron_plugin.events[ev.on_player_alt_selected_area] = entity_proc.on_player_shift_selected_area
 
 ctron_plugin.events[ev.on_player_alt_reverse_selected_area] = entity_proc.on_player_alt_reverse_selected_area
 
