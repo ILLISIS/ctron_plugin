@@ -5,7 +5,7 @@ import * as lib from "@clusterio/lib";
 import { BaseControllerPlugin, type InstanceRecord } from "@clusterio/controller";
 
 import * as messages from "./messages.js";
-import { oldestOn, stationStatus, subscribedSurfaces } from "./pool.js";
+import { cargoOffers, claimByKey, oldestOn, stationStatus, subscribedSurfaces } from "./pool.js";
 
 async function loadDatabase(
 	config: lib.ControllerConfig,
@@ -63,6 +63,7 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	async init() {
 		this.controller.handle(messages.ConstructronJobAdd, this.handleJobAdd.bind(this));
 		this.controller.handle(messages.ConstructronJobClaim, this.handleJobClaim.bind(this));
+		this.controller.handle(messages.ConstructronCargoOffers, this.handleCargoOffers.bind(this));
 		this.controller.subscriptions.handle(messages.ConstructronJobUpdate, this.handleJobsSubscription.bind(this));
 
 		// Service station subscriber status
@@ -220,7 +221,9 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	}
 
 	async handleJobClaim(event: messages.ConstructronJobClaim) {
-		const job = oldestOn(this.jobs.values(), event.surfaces, Date.now());
+		const job = event.jobKey !== null
+			? claimByKey(this.jobs, event.jobKey)
+			: oldestOn(this.jobs.values(), event.surfaces, Date.now());
 		if (!job) {
 			return null;
 		}
@@ -229,6 +232,10 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		this.broadcast([{ ...job, updatedAtMs: Date.now(), isDeleted: true, lastInstanceId: event.instanceId }]);
 		this.logger.info(`ConstructronJobClaim: instance ${event.instanceId} claimed ${job.id} on ${job.surfaceName}`);
 		return { jobKey: job.id, jobType: job.jobType, job: job.job };
+	}
+
+	async handleCargoOffers(event: messages.ConstructronCargoOffers) {
+		return { offers: cargoOffers(this.jobs.values(), event.surfaces, event.instanceId) };
 	}
 
 	async handleJobAdd(event: messages.ConstructronJobAdd) {

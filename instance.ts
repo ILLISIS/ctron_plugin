@@ -29,7 +29,10 @@ export class InstancePlugin extends BaseInstancePlugin {
 		};
 		// Factorio -> host IPC events, sent by the module's clusterio_api.send_json(...)
 		on("job_add", (data: ConstructronJobAddIPC) => this.handleJobAdd(data));
-		on("job_claim", (data: { surfaces: string[] }) => this.claimJobFromController(data.surfaces));
+		on("job_claim", (data: { surfaces: string[]; job_key?: string }) => (
+			this.claimJobFromController(data.surfaces, data.job_key ?? null)
+		));
+		on("cargo_offers", (data: { surfaces: string[] }) => this.fetchCargoOffers(data.surfaces));
 		on("stations", (data: { stations: Record<string, number> }) => this.handleStations(data.stations));
 		on("trace", async ({ op, phase, level, ...fields }: TraceIPC) => {
 			lifecycle(this.logger, op, phase, fields, level);
@@ -42,11 +45,11 @@ export class InstancePlugin extends BaseInstancePlugin {
 	}
 
 	// Called by the on_nth_tick_300 Lua handler (via IPC) to claim a job for its subscriber surfaces (spec §8).
-	async claimJobFromController(surfaces: string[]) {
+	async claimJobFromController(surfaces: string[], jobKey: string | null = null) {
 		let result: { jobKey: string; jobType: string; job: unknown } | null;
 		try {
 			result = await this.instance.sendTo(
-				"controller", new messages.ConstructronJobClaim(this.instance.id, surfaces),
+				"controller", new messages.ConstructronJobClaim(this.instance.id, surfaces, jobKey),
 			) as any;
 		} catch (err: any) {
 			this.logger.error(`ConstructronJobClaim failed: ${err?.stack ?? err}`);
@@ -64,6 +67,16 @@ export class InstancePlugin extends BaseInstancePlugin {
 			this.logger.info(`ConstructronJobClaim applied for key=${result.jobKey}: ${JSON.stringify(rconResult)}`);
 		} catch (err: any) {
 			this.logger.error(`Failed to apply claimed job for key=${result.jobKey}: ${err?.stack ?? err}`);
+		}
+	}
+
+	/** The cargo requests other tiles published on these surfaces, handed to the module to pick one (research §3). */
+	async fetchCargoOffers(surfaces: string[]) {
+		const { offers } = await this.instance.sendTo(
+			"controller", new messages.ConstructronCargoOffers(this.instance.id, surfaces),
+		) as { offers: unknown[] };
+		if (offers.length) {
+			await this.sendRcon(`/sc ctron_plugin_on_cargo_offers(${JSON.stringify(JSON.stringify(offers))})`);
 		}
 	}
 
@@ -87,7 +100,11 @@ export class InstancePlugin extends BaseInstancePlugin {
 		}
 
 		// Tell the controller this instance's stations again after a restart (also when it has none)
-		await this.sendRcon("/sc ctron_plugin_send_stations()");
+		try {
+			await this.sendRcon("/sc ctron_plugin_send_stations()");
+		} catch (err: any) {
+			this.logger.warn(`Failed to send the stations to the controller: ${err?.stack ?? err}`);
+		}
 
 		// Pull settings from controller and apply
 		try {

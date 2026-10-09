@@ -34,6 +34,7 @@ export const plugin: lib.PluginDeclaration = {
 	messages: [
 		messages.ConstructronJobAdd,
 		messages.ConstructronJobClaim,
+		messages.ConstructronCargoOffers,
 		messages.ConstructronJobUpdate,
 		messages.InstanceServiceStationStatusUpdate,
 		messages.InstanceServiceStationStatusStream,

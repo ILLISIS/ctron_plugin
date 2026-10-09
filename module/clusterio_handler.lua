@@ -27,7 +27,8 @@ clusterio_handler.job_types = {
 --------------------------------------------------------------------
 
 -- v2 (spec §8, §14 Q5): claim a job for this instance's subscriber surfaces that have an idle constructron
-clusterio_handler.on_nth_tick_300 = function()
+---@return string[] the surfaces here with a station and an idle constructron
+local function claimer_surfaces()
 	local surfaces = {}
 	for _, surface in pairs(game.surfaces) do
 		local s = surface.index
@@ -35,8 +36,71 @@ clusterio_handler.on_nth_tick_300 = function()
 			surfaces[#surfaces + 1] = surface.name
 		end
 	end
+	return surfaces
+end
+
+clusterio_handler.on_nth_tick_300 = function()
+	local surfaces = claimer_surfaces()
 	if next(surfaces) then
 		clusterio_api.send_json("ctron_plugin:job_claim", { surfaces = surfaces })
+	end
+end
+
+-- v2 (spec §13 phase 5, research §3): ask the controller for cargo requests other tiles published on these surfaces
+clusterio_handler.ask_cargo_offers = function()
+	local surfaces = claimer_surfaces()
+	if next(surfaces) then
+		clusterio_api.send_json("ctron_plugin:cargo_offers", { surfaces = surfaces })
+	end
+end
+
+---@param surface LuaSurface
+---@return LuaEntity[]
+local function stations_on(surface)
+	local stations = {}
+	for _, station in pairs(storage.service_stations) do
+		if station.valid and station.surface == surface then
+			stations[#stations + 1] = station
+		end
+	end
+	return stations
+end
+
+-- called via RCON by instance.ts with the offers (a JSON array): claim the nearest one a single local station can
+-- supply in full (research §6, decisions 2 and 4). World coordinates are shared, so distances compare across tiles.
+---@param json string
+clusterio_handler.on_cargo_offers = function(json)
+	local offers = helpers.json_to_table(json) --[[@as table]]
+	if not offers then return end
+	local ranked = {}
+	for _, offer in pairs(offers) do
+		local surface = game.surfaces[offer.surfaceName]
+		if surface then
+			local stations = stations_on(surface)
+			local nearest = math.huge
+			for _, station in pairs(stations) do
+				local dx, dy = station.position.x - offer.position.x, station.position.y - offer.position.y
+				nearest = math.min(nearest, dx * dx + dy * dy)
+			end
+			ranked[#ranked + 1] = { offer = offer, stations = stations, distance = nearest }
+		end
+	end
+	table.sort(ranked, function(a, b) return a.distance < b.distance end)
+	for _, entry in ipairs(ranked) do
+		for _, station in pairs(entry.stations) do
+			local network = station.logistic_network
+			local all = network ~= nil
+			for name, qualities in pairs(entry.offer.items) do
+				for quality, count in pairs(qualities) do
+					all = all and network.can_satisfy_request({ name = name, quality = quality }, count, true)
+				end
+			end
+			if all then
+				clusterio_api.send_json("ctron_plugin:job_claim",
+					{ surfaces = { entry.offer.surfaceName }, job_key = entry.offer.key })
+				return
+			end
+		end
 	end
 end
 
@@ -112,13 +176,31 @@ clusterio_handler.transmute_job = function(job, worker, surface_index)
 		new_job.worker_trash_inventory = worker.get_inventory(defines.inventory.spider_trash)
 	end
 
-	-- set station entity if possible
-	if job.station and job.station.position then
-		local station = game.surfaces[job.surface_index].find_entities_filtered{
-			position = job.station.position,
+	local function find_station(position)
+		return game.surfaces[job.surface_index].find_entities_filtered{
+			position = position,
 			name = "service_station",
 			radius = 1
 		}[1]
+	end
+
+	-- v2 (spec §13 phase 5, research §3): a cargo job's destination, resolved as the station is. A claim (no worker)
+	-- keeps the carried position; gone from this tile, it is nil and validate_destination_station sends the cargo home.
+	local destination = job.destination_station
+	if destination and destination.position then
+		local found = find_station(destination.position)
+		if found and found.valid then
+			new_job.destination_station = found
+		elseif not worker or border.off_tile(worker, destination.position) then
+			new_job.destination_station = { position = destination.position, valid = true }
+		else
+			new_job.destination_station = nil
+		end
+	end
+
+	-- set station entity if possible
+	if job.station and job.station.position then
+		local station = find_station(job.station.position)
 		if station and station.valid then
 			new_job.station = station
 		elseif worker and border.off_tile(worker, job.station.position) then
@@ -135,8 +217,10 @@ end
 -- v2 (spec §8): this instance's service stations by surface name, to the controller, whenever one is built or removed
 clusterio_handler.send_stations = function()
 	local stations = {}
+	-- storage.stations_count is made at on_server_startup (control.lua's init): a fresh save may not have it yet
+	local counts = storage.stations_count or {}
 	for _, surface in pairs(game.surfaces) do
-		local count = storage.stations_count[surface.index] or 0
+		local count = counts[surface.index] or 0
 		if count > 0 then
 			stations[surface.name] = count
 		end

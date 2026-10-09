@@ -80,6 +80,37 @@ export class ConstructronJobClaim {
 	static dst = "controller" as const;
 	static plugin = "ctron_plugin" as const;
 
+	/** `jobKey` names the entry to take (a supplier fetching a cargo offer); null takes the oldest (research §3). */
+	constructor(public instanceId: number, public surfaces: string[], public jobKey: string | null) { }
+
+	static jsonSchema = Type.Object({
+		instanceId: Type.Number(),
+		surfaces: Type.Array(Type.String()),
+		jobKey: Type.Union([Type.String(), Type.Null()]),
+	});
+
+	static fromJSON(json: Static<typeof this.jsonSchema>) {
+		return new this(json.instanceId, json.surfaces, json.jobKey);
+	}
+
+	static Response = plainJson(Type.Union([
+		Type.Object({
+			jobKey: Type.String(),
+			jobType: Type.String(),
+			job: Type.Unknown(),
+		}),
+		Type.Null(),
+	]));
+}
+
+/** Request from instance -> controller: the cargo requests other instances published on `surfaces` (research §3). */
+export class ConstructronCargoOffers {
+	declare ["constructor"]: typeof ConstructronCargoOffers;
+	static type = "request" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_plugin" as const;
+
 	constructor(public instanceId: number, public surfaces: string[]) { }
 
 	static jsonSchema = Type.Object({
@@ -91,14 +122,14 @@ export class ConstructronJobClaim {
 		return new this(json.instanceId, json.surfaces);
 	}
 
-	static Response = plainJson(Type.Union([
-		Type.Object({
-			jobKey: Type.String(),
-			jobType: Type.String(),
-			job: Type.Unknown(),
-		}),
-		Type.Null(),
-	]));
+	static Response = plainJson(Type.Object({
+		offers: Type.Array(Type.Object({
+			key: Type.String(),
+			surfaceName: Type.String(),
+			position: Type.Object({ x: Type.Number(), y: Type.Number() }),
+			items: Type.Unknown(),
+		})),
+	}));
 }
 
 /**

@@ -14,8 +14,8 @@ export function oldestOn(
 ): ConstructronJobValue | undefined {
 	let oldest: ConstructronJobValue | undefined;
 	for (const job of jobs) {
-		if (!job.isDeleted && surfaces.includes(job.surfaceName) && now - job.updatedAtMs >= minAgeMs
-			&& (!oldest || job.updatedAtMs < oldest.updatedAtMs)) {
+		if (!job.isDeleted && job.jobType !== "cargo" && surfaces.includes(job.surfaceName)
+			&& now - job.updatedAtMs >= minAgeMs && (!oldest || job.updatedAtMs < oldest.updatedAtMs)) {
 			oldest = job;
 		}
 	}
@@ -41,4 +41,28 @@ export function subscribedSurfaces(statuses: Iterable<InstanceServiceStationStat
 		}
 	}
 	return [...names].sort();
+}
+
+/** The cargo requests other instances published on `surfaces` (research §3): a tile never serves its own. */
+export function cargoOffers(jobs: Iterable<ConstructronJobValue>, surfaces: string[], instanceId: number) {
+	const offers = [];
+	for (const job of jobs) {
+		if (!job.isDeleted && job.jobType === "cargo" && surfaces.includes(job.surfaceName)
+			&& job.lastInstanceId !== instanceId) {
+			const body = job.job as any;
+			offers.push({
+				key: job.id,
+				surfaceName: job.surfaceName,
+				position: body.task_positions[0] ?? body.task_positions["1"], // Lua's one-element array is a JSON array
+				items: body.required_items,
+			});
+		}
+	}
+	return offers;
+}
+
+/** A claim by key: that entry if it is still open (the first fetcher wins). */
+export function claimByKey(jobs: Map<string, ConstructronJobValue>, key: string): ConstructronJobValue | undefined {
+	const job = jobs.get(key);
+	return job && !job.isDeleted ? job : undefined;
 }

@@ -29,6 +29,10 @@ ctron_plugin_on_job_claimed = function(job_json)
     clusterio_handler.on_job_claimed(job_json)
 end
 
+ctron_plugin_on_cargo_offers = function(json)
+    clusterio_handler.on_cargo_offers(json)
+end
+
 ctron_plugin_send_stations = function()
     clusterio_handler.send_stations()
 end
@@ -626,7 +630,10 @@ ctron_plugin.events[defines.events.on_script_path_request_finished] = pathfinder
 
 -- Cargo
 
-ctron_plugin.on_nth_tick[600] = cargo_job.on_nth_tick_600
+ctron_plugin.on_nth_tick[600] = function()
+    cargo_job.on_nth_tick_600()
+    clusterio_handler.ask_cargo_offers()
+end
 
 -- GUI
 

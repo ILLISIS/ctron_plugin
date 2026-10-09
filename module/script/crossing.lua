@@ -8,7 +8,7 @@ local trace = require("modules/ctron_plugin/script/trace")
 --- The fields that don't ride (§5): made again on arrival, this tile's own, or other jobs. Every other field does, so
 --- a field a later CC adds isn't dropped silently, as v1's fixed list dropped destroy jobs' state.
 local STAYS = {
-	job_index = true, surface_index = true, station = true,
+	job_index = true, surface_index = true, station = true, destination_station = true,
 	worker = true, worker_unit_number = true, worker_inventory = true, worker_ammo_slots = true,
 	worker_trash_inventory = true, worker_logistic_cell = true, worker_logistic_network = true,
 	path_request_id = true, path_request_params = true, pathfinding = true, custom_path = true,
@@ -63,6 +63,10 @@ function crossing.capture(ep, v)
 	local st = job.station
 	if st and st.valid then
 		data.station = { position = { x = st.position.x, y = st.position.y } }
+	end
+	local dest = job.destination_station
+	if dest and dest.valid then
+		data.destination_station = { position = { x = dest.position.x, y = dest.position.y } }
 	end
 	local network = v.logistic_cell and v.logistic_cell.logistic_network
 	trace.send("ctron.cross", "captured", "info", job, { edge = ep.edge, planned_edge = job.crossing and job.crossing.edge,

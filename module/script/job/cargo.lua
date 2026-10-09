@@ -1,6 +1,8 @@
 local job = require("modules/ctron_plugin/script/job")
 local debug_lib = require("modules/ctron_plugin/script/debug_lib")
 local util_func = require("modules/ctron_plugin/script/utility_functions")
+local clusterio_api = require("modules/clusterio/api")
+local trace = require("modules/ctron_plugin/script/trace")
 
 -- sub class for logistic jobs
 local cargo_job = setmetatable({}, job_metatable) ---@class cargo_job : job
@@ -66,10 +68,53 @@ function cargo_job.process_cargo_job_queue(surface_index)
         if not (station and station.valid) then
             storage.cargo_queue[surface_index][index] = nil
         else
-            if not cargo_job.make_cargo_job(station, queued_job.items) then return end
+            -- v2 (spec §13 phase 5, research §3): what no other station here can supply goes to the pool
+            if not cargo_job.supplied_locally(station, queued_job.items) then
+                cargo_job.publish(station, queued_job.items, surface_index)
+            elseif not cargo_job.make_cargo_job(station, queued_job.items) then
+                return
+            end
             storage.cargo_queue[surface_index][index] = nil
         end
     end
+end
+
+-- v2 (spec §13 phase 5, research §3): true when another station on this one's surface can supply any of the items
+---@param station table
+---@param items table<string, table<string, number>>
+function cargo_job.supplied_locally(station, items)
+    for _, other in pairs(util_func.get_service_stations(station.surface.index)) do
+        local network = other.unit_number ~= station.unit_number and other.logistic_network
+        if network then
+            for name, qualities in pairs(items) do
+                for quality, count in pairs(qualities) do
+                    if network.can_satisfy_request({ name = name, quality = quality }, count, true) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- v2 (spec §13 phase 5, research §3): publish a worker-less cargo request. It reads only station.position, so the
+-- split on a pool-claimed job (whose destination is a stand-in) can use it too. Not kept in storage.jobs.
+---@param station table
+---@param items table<string, table<string, number>>
+---@param surface_index uint
+function cargo_job.publish(station, items, surface_index)
+    storage.job_index = storage.job_index + 1
+    local job = cargo_job.new(storage.job_index, surface_index, "cargo", nil)
+    local position = { x = station.position.x, y = station.position.y }
+    job.required_items = items
+    job.task_positions = { position }
+    job.destination_station = { position = { x = position.x, y = position.y }, valid = true }
+    job.surface_name = game.surfaces[surface_index].name
+    clusterio_api.send_json("ctron_plugin:job_add", {
+        job_key = job.key, job_type = "cargo", surface_name = job.surface_name, job = job,
+    })
+    trace.send("ctron.pool", "published", "info", job, { surface = job.surface_name, cargo = true })
 end
 
 -- This function creates a new cargo job
@@ -148,12 +193,17 @@ function cargo_job:setup()
         end
         if divisor > 1 then
             for i = 1, divisor - 1 do
-                storage.cargo_index = storage.cargo_index + 1
-                storage.cargo_queue[self.surface_index][storage.cargo_index] = {
-                    index = storage.cargo_index,
-                    station = self.destination_station,
-                    items = table.deepcopy(self.required_items)
-                }
+                if self.destination_station.unit_number == nil then
+                    -- v2: a stand-in (the job came from the pool): the remainder goes back to the pool
+                    cargo_job.publish(self.destination_station, table.deepcopy(self.required_items), self.surface_index)
+                else
+                    storage.cargo_index = storage.cargo_index + 1
+                    storage.cargo_queue[self.surface_index][storage.cargo_index] = {
+                        index = storage.cargo_index,
+                        station = self.destination_station,
+                        items = table.deepcopy(self.required_items)
+                    }
+                end
             end
             cargo_job.process_cargo_job_queue(self.surface_index)
         end

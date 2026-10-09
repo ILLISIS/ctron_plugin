@@ -1,11 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ConstructronJobValue, InstanceServiceStationStatus } from "../../messages.js";
-import { oldestOn, stationsFromIpc, stationStatus, subscribedSurfaces } from "../../pool.js";
+import { cargoOffers, claimByKey, oldestOn, stationsFromIpc, stationStatus, subscribedSurfaces } from "../../pool.js";
 
 const job = (id: string, surfaceName: string, updatedAtMs: number, isDeleted = false): ConstructronJobValue => (
 	{ id, updatedAtMs, isDeleted, lastInstanceId: 1, surfaceName, jobType: "construction", job: {} }
 );
+const cargo = (id: string, surfaceName: string, instanceId: number, isDeleted = false): ConstructronJobValue => ({
+	id, updatedAtMs: 0, isDeleted, lastInstanceId: instanceId, surfaceName, jobType: "cargo",
+	job: { task_positions: [{ x: 1, y: 2 }], required_items: { "iron-plate": { normal: 20 } } },
+});
 type Status = InstanceServiceStationStatus;
 const status = (instanceId: number, stations: Record<string, number>, isDeleted = false): Status => (
 	{ id: `instance:${instanceId}`, updatedAtMs: 0, isDeleted, instanceId, stations }
@@ -39,4 +43,26 @@ test("an instance's station status: its stations by surface name, a surface with
 test("stationsFromIpc: Lua's empty table arrives as [] and means no stations", () => {
 	assert.deepEqual(stationsFromIpc([]), {});
 	assert.deepEqual(stationsFromIpc({ nauvis: 2 }), { nauvis: 2 });
+});
+
+test("a blind claim never takes a cargo request", () => {
+	const now = 100_000;
+	assert.equal(oldestOn([cargo("2|1", "nauvis", 1), job("1|2", "nauvis", 5)], ["nauvis"], now)?.id, "1|2");
+	assert.equal(oldestOn([cargo("2|1", "nauvis", 1)], ["nauvis"], now), undefined);
+});
+
+test("offers: open cargo requests on the asker's surfaces, not its own", () => {
+	const jobs = [
+		cargo("1|1", "nauvis", 1), cargo("1|2", "gleba", 1), cargo("2|1", "nauvis", 2), cargo("1|3", "nauvis", 1, true),
+	];
+	assert.deepEqual(cargoOffers(jobs, ["nauvis"], 2), [{
+		key: "1|1", surfaceName: "nauvis", position: { x: 1, y: 2 }, items: { "iron-plate": { normal: 20 } },
+	}]);
+});
+
+test("a claim by key hands that entry out once", () => {
+	const jobs = new Map([cargo("1|1", "nauvis", 1), cargo("1|3", "nauvis", 1, true)].map(j => [j.id, j]));
+	assert.equal(claimByKey(jobs, "1|1")?.id, "1|1");
+	assert.equal(claimByKey(jobs, "9|9"), undefined);
+	assert.equal(claimByKey(jobs, "1|3"), undefined);
 });
