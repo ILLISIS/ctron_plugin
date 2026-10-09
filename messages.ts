@@ -1,13 +1,14 @@
 import { plainJson } from "@clusterio/lib";
 import { Type, Static } from "@sinclair/typebox";
 
-// A stored Constructron job on the controller.
+// A stored Constructron job on the controller: id is its key, "<instance id>|<job index>" (spec §8).
 const ConstructronJobValue = Type.Object({
 	id: Type.String(),
 	updatedAtMs: Type.Number(),
 	isDeleted: Type.Boolean(),
 
 	lastInstanceId: Type.Number(),
+	surfaceName: Type.String(),
 	jobType: Type.String(),
 	job: Type.Unknown(),
 });
@@ -25,62 +26,24 @@ export class ConstructronJobAdd {
 	static dst = "controller" as const;
 	static plugin = "ctron_plugin" as const;
 
-	constructor(public instanceId: number, public jobType: string, public job: unknown, public jobKey?: string) { }
+	constructor(
+		public instanceId: number,
+		public surfaceName: string,
+		public jobType: string,
+		public job: unknown,
+		public jobKey: string,
+	) { }
 
 	static jsonSchema = Type.Object({
 		instanceId: Type.Number(),
+		surfaceName: Type.String(),
 		jobType: Type.String(),
 		job: Type.Unknown(),
-		jobKey: Type.Optional(Type.String()),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId, json.jobType, json.job, json.jobKey);
-	}
-}
-
-/**
- * Event from instance -> controller to remove a Constructron job by controller-generated id.
- */
-export class ConstructronJobRemove {
-	declare ["constructor"]: typeof ConstructronJobRemove;
-	static type = "event" as const;
-	static src = "instance" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(public instanceId: number, public jobId: string) { }
-
-	static jsonSchema = Type.Object({
-		instanceId: Type.Number(),
-		jobId: Type.String(),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId, json.jobId);
-	}
-}
-
-/**
- * Event from instance -> controller indicating a previously added job has been
- * consumed/applied on the destination instance and should be removed from the controller list.
- */
-export class ConstructronJobConsume {
-	declare ["constructor"]: typeof ConstructronJobConsume;
-	static type = "event" as const;
-	static src = "instance" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(public instanceId: number, public jobKey: string) { }
-
-	static jsonSchema = Type.Object({
-		instanceId: Type.Number(),
 		jobKey: Type.String(),
 	});
 
 	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId, json.jobKey);
+		return new this(json.instanceId, json.surfaceName, json.jobType, json.job, json.jobKey);
 	}
 }
 
@@ -93,7 +56,7 @@ export class ConstructronJobUpdate {
 	static src = "controller" as const;
 	static dst = "control" as const;
 	static plugin = "ctron_plugin" as const;
-	static permission = "ctron_plugin.jobs.read";
+	static permission = "ctron_plugin.jobs.read" as const;
 
 	constructor(public updates: ConstructronJobValue[]) { }
 
@@ -107,8 +70,8 @@ export class ConstructronJobUpdate {
 }
 
 /**
- * Request from instance -> controller to atomically claim one pending job.
- * Returns the claimed job or null if none are available.
+ * Request from instance -> controller to atomically claim one pending job on one of `surfaces` (spec §8: the
+ * claimer's subscriber surfaces with an idle constructron). Returns the claimed job or null if none are available.
  */
 export class ConstructronJobClaim {
 	declare ["constructor"]: typeof ConstructronJobClaim;
@@ -117,14 +80,15 @@ export class ConstructronJobClaim {
 	static dst = "controller" as const;
 	static plugin = "ctron_plugin" as const;
 
-	constructor(public instanceId: number) { }
+	constructor(public instanceId: number, public surfaces: string[]) { }
 
 	static jsonSchema = Type.Object({
 		instanceId: Type.Number(),
+		surfaces: Type.Array(Type.String()),
 	});
 
 	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId);
+		return new this(json.instanceId, json.surfaces);
 	}
 
 	static Response = plainJson(Type.Union([
@@ -137,165 +101,6 @@ export class ConstructronJobClaim {
 	]));
 }
 
-/** Bounding box serialised for cross-instance path requests. */
-const PathBoundingBox = Type.Object({
-	x1: Type.Number(), y1: Type.Number(),
-	x2: Type.Number(), y2: Type.Number(),
-});
-
-const PathWaypoint = Type.Object({
-	position: Type.Object({ x: Type.Number(), y: Type.Number() }),
-	needsDestroyToReach: Type.Boolean(),
-});
-
-/** Event instance -> controller: local pathfinding exhausted, route to pathworld. */
-export class CtronPathRequest {
-	declare ["constructor"]: typeof CtronPathRequest;
-	static type = "event" as const;
-	static src = "instance" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(
-		public sourceInstanceId: number,
-		public requesterId: number,
-		public surface: string,
-		public boundingBox: Static<typeof PathBoundingBox>,
-		public start: { x: number; y: number },
-		public goal: { x: number; y: number },
-		public force: string,
-		public radius: number,
-		public pathResolutionModifier: number,
-	) {}
-
-	static jsonSchema = Type.Object({
-		sourceInstanceId: Type.Number(),
-		requesterId: Type.Number(),
-		surface: Type.String(),
-		boundingBox: PathBoundingBox,
-		start: Type.Object({ x: Type.Number(), y: Type.Number() }),
-		goal: Type.Object({ x: Type.Number(), y: Type.Number() }),
-		force: Type.String(),
-		radius: Type.Number(),
-		pathResolutionModifier: Type.Number(),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(
-			json.sourceInstanceId, json.requesterId, json.surface,
-			json.boundingBox, json.start, json.goal, json.force, json.radius,
-			json.pathResolutionModifier,
-		);
-	}
-}
-
-/** Event controller -> pathworld instance: forwarded path request. */
-export class CtronForwardPathRequest {
-	declare ["constructor"]: typeof CtronForwardPathRequest;
-	static type = "event" as const;
-	static src = "controller" as const;
-	static dst = "instance" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(
-		public sourceInstanceId: number,
-		public requesterId: number,
-		public surface: string,
-		public boundingBox: Static<typeof PathBoundingBox>,
-		public start: { x: number; y: number },
-		public goal: { x: number; y: number },
-		public force: string,
-		public radius: number,
-		public pathResolutionModifier: number,
-	) {}
-
-	static jsonSchema = Type.Object({
-		sourceInstanceId: Type.Number(),
-		requesterId: Type.Number(),
-		surface: Type.String(),
-		boundingBox: PathBoundingBox,
-		start: Type.Object({ x: Type.Number(), y: Type.Number() }),
-		goal: Type.Object({ x: Type.Number(), y: Type.Number() }),
-		force: Type.String(),
-		radius: Type.Number(),
-		pathResolutionModifier: Type.Number(),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(
-			json.sourceInstanceId, json.requesterId, json.surface,
-			json.boundingBox, json.start, json.goal, json.force, json.radius,
-			json.pathResolutionModifier,
-		);
-	}
-}
-
-/** Event pathworld instance -> controller: path result ready. */
-export class CtronPathResponse {
-	declare ["constructor"]: typeof CtronPathResponse;
-	static type = "event" as const;
-	static src = "instance" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(
-		public requesterId: number,
-		public sourceInstanceId: number,
-		public path: Array<Static<typeof PathWaypoint>> | null,
-		public tryAgainLater: boolean,
-		public partial: boolean,
-		public fullyCached: boolean,
-	) {}
-
-	static jsonSchema = Type.Object({
-		requesterId: Type.Number(),
-		sourceInstanceId: Type.Number(),
-		path: Type.Union([Type.Array(PathWaypoint), Type.Null()]),
-		tryAgainLater: Type.Boolean(),
-		partial: Type.Boolean(),
-		fullyCached: Type.Boolean(),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(
-			json.requesterId, json.sourceInstanceId, json.path,
-			json.tryAgainLater, json.partial, json.fullyCached,
-		);
-	}
-}
-
-/** Event controller -> game instance: deliver path result back. */
-export class CtronReturnPathResponse {
-	declare ["constructor"]: typeof CtronReturnPathResponse;
-	static type = "event" as const;
-	static src = "controller" as const;
-	static dst = "instance" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(
-		public requesterId: number,
-		public path: Array<Static<typeof PathWaypoint>> | null,
-		public tryAgainLater: boolean,
-		public partial: boolean,
-		public fullyCached: boolean,
-	) {}
-
-	static jsonSchema = Type.Object({
-		requesterId: Type.Number(),
-		path: Type.Union([Type.Array(PathWaypoint), Type.Null()]),
-		tryAgainLater: Type.Boolean(),
-		partial: Type.Boolean(),
-		fullyCached: Type.Boolean(),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(
-			json.requesterId, json.path,
-			json.tryAgainLater, json.partial, json.fullyCached,
-		);
-	}
-}
-
 /**
  * Per-instance service station status tracked on the controller.
  * Uses the same "subscribable value" shape as other Clusterio web subscriptions.
@@ -306,14 +111,14 @@ const InstanceServiceStationStatus = Type.Object({
 	isDeleted: Type.Boolean(),
 
 	instanceId: Type.Number(),
-	serviceStationCount: Type.Number(),
-	isSubscriber: Type.Boolean(),
+	/** Service stations by surface name, the surfaces with none left out: the instance subscribes on these (§8). */
+	stations: Type.Record(Type.String(), Type.Number()),
 });
 
 export type InstanceServiceStationStatus = Static<typeof InstanceServiceStationStatus>;
 
 /**
- * Event from instance -> controller whenever service station count changes.
+ * Event from instance -> controller whenever a service station is built or removed: its stations by surface.
  */
 export class InstanceServiceStationStatusUpdate {
 	declare ["constructor"]: typeof InstanceServiceStationStatusUpdate;
@@ -322,15 +127,15 @@ export class InstanceServiceStationStatusUpdate {
 	static dst = "controller" as const;
 	static plugin = "ctron_plugin" as const;
 
-	constructor(public instanceId: number, public serviceStationCount: number) { }
+	constructor(public instanceId: number, public stations: Record<string, number>) { }
 
 	static jsonSchema = Type.Object({
 		instanceId: Type.Number(),
-		serviceStationCount: Type.Number(),
+		stations: Type.Record(Type.String(), Type.Number()),
 	});
 
 	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId, json.serviceStationCount);
+		return new this(json.instanceId, json.stations);
 	}
 }
 
@@ -343,7 +148,7 @@ export class InstanceServiceStationStatusStream {
 	static src = "controller" as const;
 	static dst = "control" as const;
 	static plugin = "ctron_plugin" as const;
-	static permission = "ctron_plugin.jobs.read";
+	static permission = "ctron_plugin.jobs.read" as const;
 
 	constructor(public updates: InstanceServiceStationStatus[]) { }
 
@@ -357,23 +162,24 @@ export class InstanceServiceStationStatusStream {
 }
 
 /**
- * Event from controller -> instance broadcasting subscriber availability.
+ * Event from controller -> instance: the surface names some instance has service stations on. A publisher surface
+ * sends its jobs to the controller only if its name is in the list (spec §8).
  */
-export class CtronSubscriberAvailabilityBroadcast {
-	declare ["constructor"]: typeof CtronSubscriberAvailabilityBroadcast;
+export class CtronSubscribedSurfaces {
+	declare ["constructor"]: typeof CtronSubscribedSurfaces;
 	static type = "event" as const;
 	static src = "controller" as const;
 	static dst = "instance" as const;
 	static plugin = "ctron_plugin" as const;
 
-	constructor(public hasSubscribers: boolean) { }
+	constructor(public surfaces: string[]) { }
 
 	static jsonSchema = Type.Object({
-		hasSubscribers: Type.Boolean(),
+		surfaces: Type.Array(Type.String()),
 	});
 
 	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.hasSubscribers);
+		return new this(json.surfaces);
 	}
 }
 
@@ -500,8 +306,6 @@ export class CtronSettingsPull {
 	static dst = "controller" as const;
 	static plugin = "ctron_plugin" as const;
 
-	constructor() { }
-
 	static jsonSchema = Type.Object({});
 
 	static fromJSON(_json: Static<typeof this.jsonSchema>) { return new this(); }
@@ -510,7 +314,7 @@ export class CtronSettingsPull {
 		surfaceSettings: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())),
 		globalSettings: Type.Record(Type.String(), Type.Unknown()),
 		mode: Type.String(),
-		hasSubscribers: Type.Boolean(),
+		subscribed: Type.Array(Type.String()),
 	}));
 }
 
@@ -523,7 +327,7 @@ export class CtronSettingsSet {
 	static src = "control" as const;
 	static dst = "controller" as const;
 	static plugin = "ctron_plugin" as const;
-	static permission = "ctron_plugin.settings.write";
+	static permission = "ctron_plugin.settings.write" as const;
 
 	constructor(public surfaceName: string | null, public settings: Record<string, unknown>) { }
 
@@ -547,10 +351,8 @@ export class CtronSettingsGet {
 	static type = "request" as const;
 	static src = "control" as const;
 	static dst = "controller" as const;
-	static permission = "ctron_plugin.settings.write";
+	static permission = "ctron_plugin.settings.write" as const;
 	static plugin = "ctron_plugin" as const;
-
-	constructor() { }
 
 	static jsonSchema = Type.Object({});
 

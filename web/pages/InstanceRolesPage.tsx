@@ -1,5 +1,5 @@
 import React, { useContext, useMemo } from "react";
-import { Table, Tabs, Tag, Typography } from "antd";
+import { Table, Tabs, Typography } from "antd";
 
 import { ControlContext, PageHeader, PageLayout, useInstances } from "@clusterio/web_ui";
 import { WebPlugin } from "..";
@@ -9,41 +9,33 @@ type Row = {
 	key: string;
 	instanceId: number;
 	instanceName: string;
-	publisher: boolean;
-	subscriber: boolean;
-	serviceStationCount: number | null;
+	/** "nauvis: 2, gleba: 1": the surfaces this instance subscribes on, by its service stations there. */
+	stations: string;
 };
 
+/** Spec §8's station view: per instance, its service stations by surface; it publishes on every other surface. */
 function InstancesTab() {
 	const control = useContext(ControlContext);
 	const plugin = control.plugins.get("ctron_plugin") as WebPlugin;
 	const statusByInstance = plugin.useServiceStationStatusByInstance();
 	const [instances] = useInstances();
 
-	const rows = useMemo(() => {
-		return [...instances.values()]
-			.map((inst) => {
-				const instanceId = inst.id;
-				const status = statusByInstance.get(instanceId);
-				const subscriber = Boolean(status?.isSubscriber);
-				const count = status?.serviceStationCount;
-				return {
-					key: String(instanceId),
-					instanceId,
-					instanceName: inst.name ?? "",
-					publisher: !subscriber,
-					subscriber,
-					serviceStationCount: typeof count === "number" ? count : null,
-				} satisfies Row;
-			})
-			.sort((a, b) => a.instanceId - b.instanceId);
-	}, [instances, statusByInstance]);
+	const rows = useMemo(() => [...instances.values()]
+		.map((inst) => {
+			const stations = Object.entries(statusByInstance.get(inst.id)?.stations ?? {})
+				.map(([surface, count]) => `${surface}: ${count}`).join(", ");
+			return { key: String(inst.id), instanceId: inst.id, instanceName: inst.name ?? "", stations } satisfies Row;
+		})
+		.sort((a, b) => a.instanceId - b.instanceId), [instances, statusByInstance]);
+	const subscribed = [...new Set([...statusByInstance.values()].flatMap(s => Object.keys(s.stations)))].sort();
 
 	return (
 		<div style={{ padding: 16 }}>
 			<Typography.Paragraph type="secondary">
-				Publishers generate Constructron jobs and send them to the controller.
-				Subscribers have at least one Constructron service station and can claim jobs from the queue.
+				An instance subscribes on each surface where it has service stations: it builds that surface&apos;s
+				jobs itself and claims others&apos; there, oldest first. On its other surfaces it publishes: its jobs go
+				to the controller while some instance subscribes on that surface. Surfaces with a subscriber:{" "}
+				{subscribed.length ? subscribed.join(", ") : "none"}.
 			</Typography.Paragraph>
 			<Table<Row>
 				rowKey={(r: Row) => r.key}
@@ -53,26 +45,13 @@ function InstancesTab() {
 					{
 						title: "Instance",
 						key: "instance",
-						render: (_value: unknown, record: Row) =>
-							record.instanceName || String(record.instanceId),
+						render: (_value: unknown, record: Row) => record.instanceName || String(record.instanceId),
 					},
 					{
-						title: "Publisher",
-						key: "publisher",
-						render: (_value: unknown, record: Row) =>
-							record.publisher ? <Tag color="green">Yes</Tag> : <Tag>No</Tag>,
-					},
-					{
-						title: "Subscriber",
-						key: "subscriber",
-						render: (_value: unknown, record: Row) =>
-							record.subscriber ? <Tag color="blue">Yes</Tag> : <Tag>No</Tag>,
-					},
-					{
-						title: "Service stations",
-						dataIndex: "serviceStationCount",
-						key: "serviceStationCount",
-						render: (value: Row["serviceStationCount"]) => (value == null ? "\u2014" : String(value)),
+						title: "Service stations by surface",
+						dataIndex: "stations",
+						key: "stations",
+						render: (value: string) => value || "— (publishes on every surface)",
 					},
 				]}
 			/>

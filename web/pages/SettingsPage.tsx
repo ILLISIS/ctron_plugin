@@ -1,6 +1,8 @@
 import React, { useContext, useEffect, useState } from "react";
-import { Button, Checkbox, Divider, Form, Input, InputNumber, message, Select, Space, Switch, Tooltip, Typography } from "antd";
-import { PageLayout, PageHeader, ControlContext } from "@clusterio/web_ui";
+import {
+	Button, Checkbox, Divider, Form, Input, InputNumber, message, Select, Space, Switch, Tooltip, Typography,
+} from "antd";
+import { PageLayout, PageHeader, ControlContext, notifyErrorHandler } from "@clusterio/web_ui";
 import * as lib from "@clusterio/lib";
 import * as messages from "../../messages";
 
@@ -28,15 +30,16 @@ export default function SettingsPage({ embedded }: { embedded?: boolean }) {
 	const [messageApi, contextHolder] = message.useMessage();
 
 	const toggleMode = React.useCallback(async (checked: boolean) => {
-		if (togglingMode) return;
+		if (togglingMode) {
+			return;
+		}
 		const newMode = checked ? "controller" : "in_game";
 		setTogglingMode(true);
 		try {
 			await control.send(new lib.ControllerConfigSetFieldRequest("ctron_plugin.settings_sync_mode", newMode));
 			const result = await control.send(new messages.CtronSettingsGet()) as any;
 			setState(result);
-		} catch (err) {
-			console.error("Failed to toggle settings mode", err);
+		} catch {
 			messageApi.error("Failed to toggle settings mode");
 		} finally {
 			setTogglingMode(false);
@@ -47,37 +50,28 @@ export default function SettingsPage({ embedded }: { embedded?: boolean }) {
 		setLoading(true);
 		control.send(new messages.CtronSettingsGet()).then((result: any) => {
 			setState(result);
-		}).catch(console.error).finally(() => setLoading(false));
+		}).catch(notifyErrorHandler("Failed to load Constructron settings")).finally(() => setLoading(false));
 	}, [control]);
 
 	useEffect(() => { fetchSettings(); }, [fetchSettings]);
 
 	useEffect(() => {
-		if (!state) return;
-		const s = selectedSurface === "(global)" ? {} : (state.surfaceSettings[selectedSurface] ?? {});
-		form.setFieldsValue({
-			construction_job_toggle: Boolean((s as any).construction_job_toggle ?? S.construction_job_toggle),
-			rebuild_job_toggle: Boolean((s as any).rebuild_job_toggle ?? S.rebuild_job_toggle),
-			deconstruction_job_toggle: Boolean((s as any).deconstruction_job_toggle ?? S.deconstruction_job_toggle),
-			upgrade_job_toggle: Boolean((s as any).upgrade_job_toggle ?? S.upgrade_job_toggle),
-			repair_job_toggle: Boolean((s as any).repair_job_toggle ?? S.repair_job_toggle),
-			destroy_job_toggle: Boolean((s as any).destroy_job_toggle ?? S.destroy_job_toggle),
-			zone_restriction_job_toggle: Boolean((s as any).zone_restriction_job_toggle ?? S.zone_restriction_job_toggle),
-			horde_mode: Boolean((s as any).horde_mode ?? S.horde_mode),
-			desired_robot_count: Number((s as any).desired_robot_count ?? S.desired_robot_count),
-			ammo_count: Number((s as any).ammo_count ?? S.ammo_count),
-			atomic_ammo_count: Number((s as any).atomic_ammo_count ?? S.atomic_ammo_count),
-			destroy_min_cluster_size: Number((s as any).destroy_min_cluster_size ?? S.destroy_min_cluster_size),
-			minion_count: Number((s as any).minion_count ?? S.minion_count),
-			desired_robot_name_name: (s as any).desired_robot_name?.name ?? S.desired_robot_name.name,
-			desired_robot_name_quality: (s as any).desired_robot_name?.quality ?? S.desired_robot_name.quality,
-			repair_tool_name_name: (s as any).repair_tool_name?.name ?? S.repair_tool_name.name,
-			repair_tool_name_quality: (s as any).repair_tool_name?.quality ?? S.repair_tool_name.quality,
-			ammo_name_name: (s as any).ammo_name?.name ?? S.ammo_name.name,
-			ammo_name_quality: (s as any).ammo_name?.quality ?? S.ammo_name.quality,
-			atomic_ammo_name_name: (s as any).atomic_ammo_name?.name ?? S.atomic_ammo_name.name,
-			atomic_ammo_name_quality: (s as any).atomic_ammo_name?.quality ?? S.atomic_ammo_name.quality,
-		});
+		if (!state) {
+			return;
+		}
+		const s: Record<string, any> = selectedSurface === "(global)"
+			? {} : (state.surfaceSettings[selectedSurface] ?? {});
+		// Each field shows the surface's value, else the default; a { name, quality } setting is two fields.
+		const values: Record<string, unknown> = {};
+		for (const [key, initial] of Object.entries(S)) {
+			if (typeof initial === "object") {
+				values[`${key}_name`] = s[key]?.name ?? initial.name;
+				values[`${key}_quality`] = s[key]?.quality ?? initial.quality;
+			} else {
+				values[key] = typeof initial === "boolean" ? Boolean(s[key] ?? initial) : Number(s[key] ?? initial);
+			}
+		}
+		form.setFieldsValue(values);
 	}, [state, selectedSurface, form]);
 
 	const isControllerMode = state?.mode === "controller";
@@ -110,8 +104,7 @@ export default function SettingsPage({ embedded }: { embedded?: boolean }) {
 			await control.send(new messages.CtronSettingsSet(surfaceName, settings));
 			const result = await control.send(new messages.CtronSettingsGet()) as any;
 			setState(result);
-		} catch (err) {
-			console.error("Failed to save settings", err);
+		} catch {
 			messageApi.error("Failed to save settings");
 		} finally {
 			setSaving(false);
@@ -143,7 +136,8 @@ export default function SettingsPage({ embedded }: { embedded?: boolean }) {
 			</Space>
 			{!loading && !isControllerMode && (
 				<Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-					Settings are currently managed in-game by players. Use the toggle above to switch to controller authority.
+					Settings are currently managed in-game by players. Use the toggle above to switch to controller
+					authority.
 				</Typography.Paragraph>
 			)}
 			<Space style={{ marginBottom: 8 }}>

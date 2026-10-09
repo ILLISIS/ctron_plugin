@@ -1,16 +1,8 @@
 {
-	"extends": "./tsconfig.base.json",
-	"compilerOptions": {
-		"jsx": "react-jsx",
-		"module": "esnext",
-		"target": "ES2022",
-		"lib": ["DOM", "ES2022"],
-		"rootDir": ".",
-		"noEmit": true
-	},
-	"include": [
-		"web/**/*.tsx",
-		"web/**/*.ts",
-		"messages.ts"
-	]
+	"extends": "../../../tsconfig.browser.json",
+	"references": [
+		{ "path": "../../../packages/lib/tsconfig.browser.json" },
+		{ "path": "../../../packages/web_ui/tsconfig.browser.json" }
+	],
+	"include": ["web/**/*.tsx", "web/**/*.ts", "index.ts", "messages.ts", "package.json"]
 }

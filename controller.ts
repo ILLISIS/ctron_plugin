@@ -2,9 +2,10 @@ import * as path from "path";
 import * as fs from "fs/promises";
 
 import * as lib from "@clusterio/lib";
-import { BaseControllerPlugin, InstanceInfo } from "@clusterio/controller";
+import { BaseControllerPlugin, type InstanceRecord } from "@clusterio/controller";
 
-import * as messages from "./messages";
+import * as messages from "./messages.js";
+import { oldestOn, stationStatus, subscribedSurfaces } from "./pool.js";
 
 async function loadDatabase(
 	config: lib.ControllerConfig,
@@ -39,25 +40,19 @@ async function saveDatabase(
 	await lib.safeOutputFile(file, JSON.stringify(Array.from(datastore)));
 }
 
-function makeJobId() {
-	// Controller-generated id. No semantic meaning; must be unique.
-	// Node 18 should have crypto.randomUUID.
-	return `job:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
-}
-
 export class ControllerPlugin extends BaseControllerPlugin {
-	jobsById: Map<string, messages.ConstructronJobValue> = new Map();
-	jobsByKey: Map<string, string> = new Map();
+	/** The pool (spec §8): unclaimed jobs by key. */
+	jobs: Map<string, messages.ConstructronJobValue> = new Map();
 	storageDirty = false;
 	static readonly dbFilename = "ctron_jobs.json";
 
-	// Service station status by instance id.
+	// Service stations by instance id, per surface.
 	serviceStationStatusByInstance: Map<number, messages.InstanceServiceStationStatus> = new Map();
 	serviceStationStorageDirty = false;
-	static readonly serviceStationDbFilename = "ctron_service_station_status.json";
+	static readonly serviceStationDbFilename = "ctron_stations.json";
 
-	// Whether any instance currently has subscribers (service stations).
-	hasSubscribers = false;
+	/** The surface names some instance has stations on: publishers send jobs only for these (spec §8). */
+	subscribed: string[] = [];
 
 	// Constructron settings sync state.
 	ctronSurfaceSettings: Map<string, Record<string, unknown>> = new Map();
@@ -68,10 +63,6 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	async init() {
 		this.controller.handle(messages.ConstructronJobAdd, this.handleJobAdd.bind(this));
 		this.controller.handle(messages.ConstructronJobClaim, this.handleJobClaim.bind(this));
-		this.controller.handle(messages.ConstructronJobConsume, this.handleJobConsume.bind(this));
-		this.controller.handle(messages.ConstructronJobRemove, this.handleJobRemove.bind(this));
-		this.controller.handle(messages.CtronPathRequest, this.handleCtronPathRequest.bind(this));
-		this.controller.handle(messages.CtronPathResponse, this.handleCtronPathResponse.bind(this));
 		this.controller.subscriptions.handle(messages.ConstructronJobUpdate, this.handleJobsSubscription.bind(this));
 
 		// Service station subscriber status
@@ -101,34 +92,14 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		// Seed default status for instances we don't have persisted entries for.
 		const now = Date.now();
 		for (const instance of this.controller.instances.values()) {
-			const instanceId = instance.id;
-			if (this.serviceStationStatusByInstance.has(instanceId)) {
-				continue;
+			if (!this.serviceStationStatusByInstance.has(instance.id)) {
+				this.serviceStationStatusByInstance.set(instance.id, stationStatus(instance.id, {}, now));
 			}
-			const status: messages.InstanceServiceStationStatus = {
-				id: `instance:${instanceId}`,
-				updatedAtMs: now,
-				isDeleted: false,
-				instanceId,
-				serviceStationCount: 0,
-				isSubscriber: false,
-			};
-			this.serviceStationStatusByInstance.set(instanceId, status);
 		}
 		this.broadcastServiceStationStatus([...this.serviceStationStatusByInstance.values()]);
-		this.hasSubscribers = this.computeHasSubscribers();
-		this.broadcastSubscriberAvailability();
+		this.subscribed = subscribedSurfaces(this.serviceStationStatusByInstance.values());
 
-		this.jobsById = await loadDatabase(this.controller.config, ControllerPlugin.dbFilename, this.logger);
-		// Rebuild key index
-		this.jobsByKey = new Map();
-		for (const job of this.jobsById.values()) {
-			// Legacy: older entries may have __ctron_plugin_key embedded in the job blob.
-			const key = (job.job as any)?.__ctron_plugin_key;
-			if (typeof key === "string" && !job.isDeleted) {
-				this.jobsByKey.set(key, job.id);
-			}
-		}
+		this.jobs = await loadDatabase(this.controller.config, ControllerPlugin.dbFilename, this.logger);
 
 		// Settings sync handlers
 		this.controller.handle(messages.CtronSurfaceRegister, this.handleSurfaceRegister.bind(this));
@@ -166,37 +137,19 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		}
 	}
 
-	async onInstanceStatusChanged(instance: InstanceInfo, _prev?: lib.InstanceStatus) {
+	async onInstanceStatusChanged(instance: InstanceRecord, _prev?: lib.InstanceStatus) {
 		const instanceId = instance.id;
 		if (instance.status === "deleted") {
 			const existing = this.serviceStationStatusByInstance.get(instanceId);
 			if (existing) {
-				const tombstone: messages.InstanceServiceStationStatus = {
-					...existing,
-					updatedAtMs: Date.now(),
-					isDeleted: true,
-					serviceStationCount: 0,
-					isSubscriber: false,
-				};
+				const tombstone = { ...stationStatus(instanceId, {}, Date.now()), isDeleted: true };
 				this.serviceStationStatusByInstance.delete(instanceId);
 				this.serviceStationStorageDirty = true;
 				this.broadcastServiceStationStatus([tombstone]);
-
-				const newHasSubscribers = this.computeHasSubscribers();
-				if (newHasSubscribers !== this.hasSubscribers) {
-					this.hasSubscribers = newHasSubscribers;
-					this.broadcastSubscriberAvailability();
-				}
+				this.updateSubscribed();
 			}
 		} else if (!this.serviceStationStatusByInstance.has(instanceId)) {
-			const status: messages.InstanceServiceStationStatus = {
-				id: `instance:${instanceId}`,
-				updatedAtMs: Date.now(),
-				isDeleted: false,
-				instanceId,
-				serviceStationCount: 0,
-				isSubscriber: false,
-			};
+			const status = stationStatus(instanceId, {}, Date.now());
 			this.serviceStationStatusByInstance.set(instanceId, status);
 			this.serviceStationStorageDirty = true;
 			this.broadcastServiceStationStatus([status]);
@@ -206,7 +159,7 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	async onSaveData() {
 		if (this.storageDirty) {
 			this.storageDirty = false;
-			await saveDatabase(this.controller.config, this.jobsById, ControllerPlugin.dbFilename, this.logger);
+			await saveDatabase(this.controller.config, this.jobs, ControllerPlugin.dbFilename, this.logger);
 		}
 		if (this.serviceStationStorageDirty) {
 			this.serviceStationStorageDirty = false;
@@ -243,50 +196,21 @@ export class ControllerPlugin extends BaseControllerPlugin {
 		}
 	}
 
-	private computeHasSubscribers(): boolean {
-		for (const status of this.serviceStationStatusByInstance.values()) {
-			if (status.isSubscriber) return true;
-		}
-		return false;
-	}
-
-	private broadcastSubscriberAvailability() {
-		const msg = new messages.CtronSubscriberAvailabilityBroadcast(this.hasSubscribers);
-		for (const instance of this.controller.instances.values()) {
-			const assignedHostId = instance.config.get("instance.assigned_host");
-			if (!assignedHostId) continue;
-			const hostConnection = this.controller.wsServer.hostConnections.get(assignedHostId);
-			if (!hostConnection) continue;
-			const dst = lib.Address.fromShorthand({ instanceId: instance.id });
-			try {
-				hostConnection.connector.sendEvent(msg, dst);
-			} catch (err: any) {
-				this.logger.warn(`Failed to broadcast subscriber availability to instance ${instance.id}: ${err?.message ?? err}`);
-			}
+	/** Recompute the subscribed surfaces, and tell every instance when they changed (spec §8). */
+	private updateSubscribed() {
+		const now = subscribedSurfaces(this.serviceStationStatusByInstance.values());
+		if (now.join("\n") !== this.subscribed.join("\n")) {
+			this.subscribed = now;
+			this.controller.sendTo("allInstances", new messages.CtronSubscribedSurfaces(now));
 		}
 	}
 
 	async handleInstanceServiceStationStatusUpdate(event: messages.InstanceServiceStationStatusUpdate) {
-		const now = Date.now();
-		const count = Math.max(0, Math.floor(event.serviceStationCount));
-		const status: messages.InstanceServiceStationStatus = {
-			id: `instance:${event.instanceId}`,
-			updatedAtMs: now,
-			isDeleted: false,
-			instanceId: event.instanceId,
-			serviceStationCount: count,
-			isSubscriber: count > 0,
-		};
-
+		const status = stationStatus(event.instanceId, event.stations, Date.now());
 		this.serviceStationStatusByInstance.set(event.instanceId, status);
 		this.serviceStationStorageDirty = true;
 		this.broadcastServiceStationStatus([status]);
-
-		const newHasSubscribers = this.computeHasSubscribers();
-		if (newHasSubscribers !== this.hasSubscribers) {
-			this.hasSubscribers = newHasSubscribers;
-			this.broadcastSubscriberAvailability();
-		}
+		this.updateSubscribed();
 	}
 
 	async handleInstanceServiceStationStatusSubscription(request: lib.SubscriptionRequest) {
@@ -296,203 +220,45 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	}
 
 	async handleJobClaim(event: messages.ConstructronJobClaim) {
-		// Find the oldest unclaimed (non-deleted) job.
-		// Require the job to be at least 1 second old to avoid race conditions
-		// where a subscriber claims a job in the same tick the publisher adds it.
-		const minAgeMs = 1000;
-		const now = Date.now();
-		let oldest: messages.ConstructronJobValue | undefined;
-		let oldestKey: string | undefined;
-		for (const [key, job] of this.jobsById) {
-			if (!job.isDeleted && (now - job.updatedAtMs) >= minAgeMs) {
-				if (!oldest || job.updatedAtMs < oldest.updatedAtMs) {
-					oldest = job;
-					oldestKey = key;
-				}
-			}
+		const job = oldestOn(this.jobs.values(), event.surfaces, Date.now());
+		if (!job) {
+			return null;
 		}
-		if (!oldest || !oldestKey) return null;
-
-		// Find jobKey for this job id (reverse lookup).
-		let jobKey: string | undefined;
-		for (const [k, id] of this.jobsByKey) {
-			if (id === oldestKey) { jobKey = k; break; }
-		}
-
-		// Tombstone and remove.
-		const tombstone: messages.ConstructronJobValue = { ...oldest, updatedAtMs: Date.now(), isDeleted: true, lastInstanceId: event.instanceId };
-		this.jobsById.delete(oldestKey);
-		if (jobKey) this.jobsByKey.delete(jobKey);
+		this.jobs.delete(job.id);
 		this.storageDirty = true;
-		this.broadcast([tombstone]);
-
-		this.logger.info(`ConstructronJobClaim: instance ${event.instanceId} claimed job ${oldestKey} (type=${oldest.jobType})`);
-		return { jobKey: jobKey ?? oldestKey, jobType: oldest.jobType, job: oldest.job };
+		this.broadcast([{ ...job, updatedAtMs: Date.now(), isDeleted: true, lastInstanceId: event.instanceId }]);
+		this.logger.info(`ConstructronJobClaim: instance ${event.instanceId} claimed ${job.id} on ${job.surfaceName}`);
+		return { jobKey: job.id, jobType: job.jobType, job: job.job };
 	}
 
 	async handleJobAdd(event: messages.ConstructronJobAdd) {
-		const now = Date.now();
-		const id = makeJobId();
-
-		const jobKey = event.jobKey;
-		const job = (event.job && typeof event.job === "object")
-			? { ...(event.job as any) }
-			: event.job;
-
 		const value: messages.ConstructronJobValue = {
-			id,
-			updatedAtMs: now,
+			id: event.jobKey,
+			updatedAtMs: Date.now(),
 			isDeleted: false,
 			lastInstanceId: event.instanceId,
+			surfaceName: event.surfaceName,
 			jobType: event.jobType,
-			job,
+			job: event.job,
 		};
-
-		this.jobsById.set(id, value);
-		if (jobKey) {
-			this.jobsByKey.set(jobKey, id);
-		}
+		this.jobs.set(value.id, value);
 		this.storageDirty = true;
 		this.broadcast([value]);
 	}
 
-	async handleJobConsume(event: messages.ConstructronJobConsume) {
-		const id = this.jobsByKey.get(event.jobKey);
-		if (!id) {
-			return;
-		}
-		const existing = this.jobsById.get(id);
-		if (!existing) {
-			this.jobsByKey.delete(event.jobKey);
-			return;
-		}
-
-		const now = Date.now();
-		// Broadcast a tombstone so UI removes it.
-		const tombstone: messages.ConstructronJobValue = {
-			...existing,
-			updatedAtMs: now,
-			isDeleted: true,
-			lastInstanceId: event.instanceId,
-		};
-
-		this.jobsById.delete(id);
-		this.jobsByKey.delete(event.jobKey);
-		this.storageDirty = true;
-		this.broadcast([tombstone]);
-	}
-
-	async handleJobRemove(event: messages.ConstructronJobRemove) {
-		const existing = this.jobsById.get(event.jobId);
-		if (!existing) {
-			// Removing a non-existing job is a no-op.
-			return;
-		}
-
-		const now = Date.now();
-		const updated: messages.ConstructronJobValue = {
-			...existing,
-			updatedAtMs: now,
-			isDeleted: true,
-			lastInstanceId: event.instanceId,
-		};
-
-		// Best-effort cleanup for legacy embedded key.
-		this.jobsByKey.delete((updated.job as any)?.__ctron_plugin_key);
-		this.jobsById.set(event.jobId, updated);
-		this.storageDirty = true;
-		this.broadcast([updated]);
-	}
-
-	private getPathworldInstanceId(): number | undefined {
-		for (const instance of this.controller.instances.values()) {
-			if (instance.config.get("instance.name") === "pathworld") {
-				return instance.id;
-			}
-		}
-		return undefined;
-	}
-
-	async handleCtronPathRequest(event: messages.CtronPathRequest) {
-		const pathworldId = this.getPathworldInstanceId();
-		if (pathworldId == null) {
-			this.logger.warn(`[ctron_plugin] path request ${event.requesterId}: no pathworld instance found, dropping`);
-			return;
-		}
-		const instance = this.controller.instances.get(pathworldId)!;
-		const assignedHostId = instance.config.get("instance.assigned_host");
-		if (assignedHostId === null) {
-			this.logger.warn(`[ctron_plugin] path request ${event.requesterId}: pathworld not assigned to a host, dropping`);
-			return;
-		}
-		const hostConnection = this.controller.wsServer.hostConnections.get(assignedHostId);
-		if (!hostConnection) {
-			this.logger.warn(`[ctron_plugin] path request ${event.requesterId}: pathworld host offline, dropping`);
-			return;
-		}
-		this.logger.info(`[ctron_plugin] forwarding path request ${event.requesterId} from ${event.sourceInstanceId} -> pathworld ${pathworldId}`);
-		const dst = lib.Address.fromShorthand({ instanceId: pathworldId });
-		const forward = new messages.CtronForwardPathRequest(
-			event.sourceInstanceId, event.requesterId, event.surface,
-			event.boundingBox, event.start, event.goal, event.force, event.radius,
-			event.pathResolutionModifier,
-		);
-		try {
-			hostConnection.connector.sendEvent(forward, dst);
-		} catch (err: any) {
-			this.logger.error(`[ctron_plugin] failed to forward path request: ${err?.stack ?? err}`);
-		}
-	}
-
-	async handleCtronPathResponse(event: messages.CtronPathResponse) {
-		const instance = this.controller.instances.get(event.sourceInstanceId);
-		if (!instance) {
-			this.logger.warn(`[ctron_plugin] path response for unknown source instance ${event.sourceInstanceId}, dropping`);
-			return;
-		}
-		const assignedHostId = instance.config.get("instance.assigned_host");
-		if (assignedHostId === null) {
-			this.logger.warn(`[ctron_plugin] path response: source instance ${event.sourceInstanceId} not assigned to host, dropping`);
-			return;
-		}
-		const hostConnection = this.controller.wsServer.hostConnections.get(assignedHostId);
-		if (!hostConnection) {
-			this.logger.warn(`[ctron_plugin] path response: source host offline (instance=${event.sourceInstanceId}), dropping`);
-			return;
-		}
-		this.logger.info(`[ctron_plugin] returning path response for requester ${event.requesterId} to instance ${event.sourceInstanceId}`);
-		const dst = lib.Address.fromShorthand({ instanceId: event.sourceInstanceId });
-		const ret = new messages.CtronReturnPathResponse(
-			event.requesterId, event.path,
-			event.tryAgainLater, event.partial, event.fullyCached,
-		);
-		try {
-			hostConnection.connector.sendEvent(ret, dst);
-		} catch (err: any) {
-			this.logger.error(`[ctron_plugin] failed to return path response: ${err?.stack ?? err}`);
-		}
-	}
-
-	private broadcastSettingsToInstances(excludeInstanceId?: number) {
+	/**
+	 * The settings to every running instance with the plugin loaded ("allInstances": the hosts skip the others, which
+	 * would reject an event they have no handler for). The instance a change came from gets its own values back.
+	 */
+	private broadcastSettingsToInstances() {
 		const surfaceSettings: Record<string, Record<string, unknown>> = {};
 		for (const [name, s] of this.ctronSurfaceSettings) {
 			surfaceSettings[name] = s;
 		}
 		const mode = this.controller.config.get("ctron_plugin.settings_sync_mode");
-		const msg = new messages.CtronSettingsBroadcast(surfaceSettings, this.ctronGlobalSettings, mode);
-		for (const instance of this.controller.instances.values()) {
-			if (instance.id === excludeInstanceId) continue;
-			const assignedHostId = instance.config.get("instance.assigned_host");
-			if (!assignedHostId) continue;
-			const hostConnection = this.controller.wsServer.hostConnections.get(assignedHostId);
-			if (!hostConnection) continue;
-			const dst = lib.Address.fromShorthand({ instanceId: instance.id });
-			try {
-				hostConnection.connector.sendEvent(msg, dst);
-			} catch (err: any) {
-				this.logger.warn(`Failed to broadcast settings to instance ${instance.id}: ${err?.message ?? err}`);
-			}
-		}
+		this.controller.sendTo(
+			"allInstances", new messages.CtronSettingsBroadcast(surfaceSettings, this.ctronGlobalSettings, mode),
+		);
 	}
 
 	private storeSettings(surfaceName: string | null, settings: Record<string, unknown>) {
@@ -514,16 +280,20 @@ export class ControllerPlugin extends BaseControllerPlugin {
 				this.logger.info(`ctron_plugin: registered new surface "${name}"`);
 			}
 		}
-		if (dirty) this.ctronSettingsDirty = true;
+		if (dirty) {
+			this.ctronSettingsDirty = true;
+		}
 		this.logger.info(`ctron_plugin: ctronSurfaceSettings size=${this.ctronSurfaceSettings.size}`);
 	}
 
 	async handleSettingsUpdate(event: messages.CtronSettingsUpdate) {
 		const mode = this.controller.config.get("ctron_plugin.settings_sync_mode");
-		if (mode !== "in_game") return;
+		if (mode !== "in_game") {
+			return;
+		}
 		this.storeSettings(event.surfaceName, event.settings);
 		this.ctronSettingsDirty = true;
-		this.broadcastSettingsToInstances(event.instanceId);
+		this.broadcastSettingsToInstances();
 	}
 
 	async handleSettingsPull(_event: messages.CtronSettingsPull) {
@@ -532,7 +302,7 @@ export class ControllerPlugin extends BaseControllerPlugin {
 			surfaceSettings[name] = s;
 		}
 		const mode = this.controller.config.get("ctron_plugin.settings_sync_mode");
-		return { surfaceSettings, globalSettings: this.ctronGlobalSettings, mode, hasSubscribers: this.hasSubscribers };
+		return { surfaceSettings, globalSettings: this.ctronGlobalSettings, mode, subscribed: this.subscribed };
 	}
 
 	async handleSettingsSet(event: messages.CtronSettingsSet) {
@@ -562,7 +332,7 @@ export class ControllerPlugin extends BaseControllerPlugin {
 	}
 
 	async handleJobsSubscription(request: lib.SubscriptionRequest) {
-		const values = [...this.jobsById.values()].filter(v => v.updatedAtMs > request.lastRequestTimeMs);
+		const values = [...this.jobs.values()].filter(v => v.updatedAtMs > request.lastRequestTimeMs);
 		return values.length ? new messages.ConstructronJobUpdate(values) : null;
 	}
 }
