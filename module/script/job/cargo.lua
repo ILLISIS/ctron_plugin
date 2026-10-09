@@ -28,8 +28,9 @@ end
 local function unloading_at(station)
     for _, job in pairs(storage.jobs) do
         local dest = job.job_type == "cargo" and job.destination_station
-        if dest and dest.unit_number == station.unit_number
-            and (job.sub_state == "unloading_items" or job.state == "finishing") then
+        -- a destroyed destination reads as invalid: its job goes home without unloading
+        if dest and (job.sub_state == "unloading_items" or job.state == "finishing")
+            and dest.valid and dest.unit_number == station.unit_number then
             return true
         end
     end

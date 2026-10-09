@@ -104,6 +104,7 @@ t.case("G11: a supplier's constructron loads at its station, crosses, delivers i
 		return plates(state.surface, 37, 3100) == 20 and fx.by_key(state.key) == nil and home(state)
 	end, function()
 		ctx.expect(storage.station_requests[state.a.unit_number][1].in_transit_count == 0, "the slot is no longer in transit")
+		ctx.expect(#published(state.surface) == 0, "A asked for no second delivery while the first unloaded")
 		ctx.expect(fx.phases(state.key, "ctron.cross") == "captured,arrived,handed_off,captured,arrived,handed_off",
 			"out and back: " .. fx.phases(state.key, "ctron.cross"))
 	end)
