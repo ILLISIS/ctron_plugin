@@ -151,10 +151,16 @@ t.case("a busy destination holds the constructron: the job stays paused, then cr
 		fx.wait(ctx, 13, 3000, "held", function()
 			return c.job.in_transit ~= nil
 		end, function(k)
-			local state = c.job.state
+			local state, ran = c.job.state, false
+			c.job.validate_worker = function() -- execute reaches this unless its in-transit skip holds
+				ran = true
+				return false
+			end
 			ctx.at(k + 600, function()
 				ctx.expect(c.v.valid and c.v.disabled_by_script and c.job.in_transit ~= nil, "still held, paused")
 				ctx.expect(c.job.state == state and live(c.key) == 0 and fx.by_key(c.key) == c.job, "not run, not copied")
+				ctx.expect(not ran, "execute skipped the held job")
+				c.job.validate_worker = nil
 				fx.busy[c.ey] = nil
 				fx.wait(ctx, k + 601, 2400, "the crossing", function()
 					return not c.v.valid and storage.jobs[c.job.job_index] == nil and fx.by_key(c.key) ~= nil

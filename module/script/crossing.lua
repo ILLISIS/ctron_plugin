@@ -64,10 +64,10 @@ function crossing.capture(ep, v)
 	if st and st.valid then
 		data.station = { position = { x = st.position.x, y = st.position.y } }
 	end
-	job.in_transit = v.unit_number -- execute skips it; on_object_destroyed drops it at commit
 	local network = v.logistic_cell and v.logistic_cell.logistic_network
 	trace.send("ctron.cross", "captured", "info", job, { edge = ep.edge, planned_edge = job.crossing and job.crossing.edge,
 		state = job.state, robots_out = network and #network.construction_robots or 0 })
+	job.in_transit = v.unit_number -- execute skips it; on_object_destroyed drops it at commit
 	return data
 end
 
