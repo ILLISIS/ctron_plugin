@@ -85,7 +85,7 @@ local function trip_fixture(ctx, name, state)
 		state.v = fx.ctron(state.surface, 32, 1940)
 	end)
 	ctx.at(12, function()
-		request(state.a, 20, 0) -- min 0: the first half landing must not make A ask again
+		request(state.a, 20)
 		claim(state.key, state.surface)
 	end)
 end

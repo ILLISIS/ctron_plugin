@@ -60,7 +60,14 @@ test("offers: open cargo requests on the asker's surfaces, not its own", () => {
 	}]);
 });
 
-test("a claim by key hands that entry out once", () => {
+test("a split remainder published by B for requester A is offered to B, not to A", () => {
+	const rest = { ...cargo("2|5", "nauvis", 2),
+		job: { requester: 1, task_positions: [{ x: 1, y: 2 }], required_items: {} } };
+	assert.equal(cargoOffers([rest], ["nauvis"], 2).length, 1);
+	assert.equal(cargoOffers([rest], ["nauvis"], 1).length, 0);
+});
+
+test("a claim by key finds that entry while it is open", () => {
 	const jobs = new Map([cargo("1|1", "nauvis", 1), cargo("1|3", "nauvis", 1, true)].map(j => [j.id, j]));
 	assert.equal(claimByKey(jobs, "1|1")?.id, "1|1");
 	assert.equal(claimByKey(jobs, "9|9"), undefined);

@@ -23,9 +23,23 @@ cargo_job.on_nth_tick_600 = function()
 end
 
 
+-- v2 (spec §13 phase 5): deliver_items zeroes in_transit_count on arrival, before the robots unload; until then the
+-- station must not ask again, or another tile makes a second trip
+local function unloading_at(station)
+    for _, job in pairs(storage.jobs) do
+        local dest = job.job_type == "cargo" and job.destination_station
+        if dest and dest.unit_number == station.unit_number
+            and (job.sub_state == "unloading_items" or job.state == "finishing") then
+            return true
+        end
+    end
+    return false
+end
+
 -- This function checks all stations for items that need to be restocked
 function cargo_job.prospect_cargo_jobs()
     for _, station in pairs(storage.service_stations) do
+        if unloading_at(station) then goto continue end
         local requests = storage.station_requests[station.unit_number]
         if not next(requests) then goto continue end
         if not station.logistic_network then goto continue end
@@ -103,7 +117,8 @@ end
 ---@param station table
 ---@param items table<string, table<string, number>>
 ---@param surface_index uint
-function cargo_job.publish(station, items, surface_index)
+---@param requester number? the instance whose station asked; kept through a split's re-publish (default: this one)
+function cargo_job.publish(station, items, surface_index, requester)
     storage.job_index = storage.job_index + 1
     local job = cargo_job.new(storage.job_index, surface_index, "cargo", nil)
     local position = { x = station.position.x, y = station.position.y }
@@ -111,6 +126,7 @@ function cargo_job.publish(station, items, surface_index)
     job.task_positions = { position }
     job.destination_station = { position = { x = position.x, y = position.y }, valid = true }
     job.surface_name = game.surfaces[surface_index].name
+    job.requester = requester or clusterio_api.get_instance_id()
     clusterio_api.send_json("ctron_plugin:job_add", {
         job_key = job.key, job_type = "cargo", surface_name = job.surface_name, job = job,
     })
@@ -195,7 +211,8 @@ function cargo_job:setup()
             for i = 1, divisor - 1 do
                 if self.destination_station.unit_number == nil then
                     -- v2: a stand-in (the job came from the pool): the remainder goes back to the pool
-                    cargo_job.publish(self.destination_station, table.deepcopy(self.required_items), self.surface_index)
+                    cargo_job.publish(self.destination_station, table.deepcopy(self.required_items), self.surface_index,
+                        self.requester)
                 else
                     storage.cargo_index = storage.cargo_index + 1
                     storage.cargo_queue[self.surface_index][storage.cargo_index] = {

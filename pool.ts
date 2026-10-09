@@ -47,9 +47,9 @@ export function subscribedSurfaces(statuses: Iterable<InstanceServiceStationStat
 export function cargoOffers(jobs: Iterable<ConstructronJobValue>, surfaces: string[], instanceId: number) {
 	const offers = [];
 	for (const job of jobs) {
+		const body = job.job as any;
 		if (!job.isDeleted && job.jobType === "cargo" && surfaces.includes(job.surfaceName)
-			&& job.lastInstanceId !== instanceId) {
-			const body = job.job as any;
+			&& (body?.requester ?? job.lastInstanceId) !== instanceId) {
 			offers.push({
 				key: job.id,
 				surfaceName: job.surfaceName,
