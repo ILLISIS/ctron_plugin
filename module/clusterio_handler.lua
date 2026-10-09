@@ -50,7 +50,13 @@ clusterio_handler.on_job_claimed = function(job_json)
 		return
 	end
 	-- v2 (spec §8): the publisher's surface index means nothing here; its surface name maps the job and its chunks
-	local new_job = clusterio_handler.transmute_job(job, nil, game.surfaces[job.surface_name].index)
+	local surface = game.surfaces[job.surface_name]
+	if not surface then
+		-- ponytail: the controller already dropped it, so the job is lost (no re-publish)
+		trace.send("ctron.pool", "claim_dropped", "warn", job, { surface = job.surface_name })
+		return
+	end
+	local new_job = clusterio_handler.transmute_job(job, nil, surface.index)
 	trace.send("ctron.pool", "claimed", "info", new_job, { surface = job.surface_name })
 end
 

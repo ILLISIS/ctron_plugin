@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ConstructronJobValue, InstanceServiceStationStatus } from "../../messages.js";
-import { oldestOn, stationStatus, subscribedSurfaces } from "../../pool.js";
+import { oldestOn, stationsFromIpc, stationStatus, subscribedSurfaces } from "../../pool.js";
 
 const job = (id: string, surfaceName: string, updatedAtMs: number, isDeleted = false): ConstructronJobValue => (
 	{ id, updatedAtMs, isDeleted, lastInstanceId: 1, surfaceName, jobType: "construction", job: {} }
@@ -34,4 +34,9 @@ test("an instance's station status: its stations by surface name, a surface with
 	const s = stationStatus(7, { nauvis: 2, gleba: 0 }, 5);
 	assert.deepEqual(s, { id: "instance:7", updatedAtMs: 5, isDeleted: false, instanceId: 7, stations: { nauvis: 2 } });
 	assert.deepEqual(subscribedSurfaces([s, stationStatus(8, { gleba: 0 }, 6)]), ["nauvis"]);
+});
+
+test("stationsFromIpc: Lua's empty table arrives as [] and means no stations", () => {
+	assert.deepEqual(stationsFromIpc([]), {});
+	assert.deepEqual(stationsFromIpc({ nauvis: 2 }), { nauvis: 2 });
 });

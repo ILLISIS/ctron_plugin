@@ -4,6 +4,11 @@ import type { ConstructronJobValue, InstanceServiceStationStatus } from "./messa
  * A claim (spec §8, D-5): the oldest unclaimed job on one of the claimer's surfaces. A job younger than minAgeMs
  * waits, as v1's did, so a claim never races the add it follows.
  */
+/** Lua encodes an empty table as `[]`: no stations left on this instance. */
+export function stationsFromIpc(stations: Record<string, number> | []): Record<string, number> {
+	return Array.isArray(stations) ? {} : stations;
+}
+
 export function oldestOn(
 	jobs: Iterable<ConstructronJobValue>, surfaces: string[], now: number, minAgeMs = 1000,
 ): ConstructronJobValue | undefined {

@@ -29,6 +29,10 @@ ctron_plugin_on_job_claimed = function(job_json)
     clusterio_handler.on_job_claimed(job_json)
 end
 
+ctron_plugin_send_stations = function()
+    clusterio_handler.send_stations()
+end
+
 ctron_plugin_apply_synced_settings = function(json)
     local data = helpers.json_to_table(json)
     if not data then return end

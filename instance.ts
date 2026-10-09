@@ -1,6 +1,7 @@
 import { BaseInstancePlugin } from "@clusterio/host";
 import { lifecycle } from "universal_edges/runtime";
 import * as messages from "./messages.js";
+import { stationsFromIpc } from "./pool.js";
 
 type ConstructronJobAddIPC = { job_key: string; job_type: string; surface_name: string; job: unknown };
 
@@ -85,6 +86,9 @@ export class InstancePlugin extends BaseInstancePlugin {
 			this.logger.warn(`Failed to register surfaces with controller: ${err?.stack ?? err}`);
 		}
 
+		// Tell the controller this instance's stations again after a restart (also when it has none)
+		await this.sendRcon("/sc ctron_plugin_send_stations()");
+
 		// Pull settings from controller and apply
 		try {
 			const pullResult = await this.instance.sendTo("controller", new messages.CtronSettingsPull()) as any;
@@ -109,9 +113,10 @@ export class InstancePlugin extends BaseInstancePlugin {
 		));
 	}
 
-	async handleStations(stations: Record<string, number>) {
+	async handleStations(stations: Record<string, number> | []) {
 		await this.instance.sendTo(
-			"controller", new messages.InstanceServiceStationStatusUpdate(this.instance.id, stations),
+			"controller",
+			new messages.InstanceServiceStationStatusUpdate(this.instance.id, stationsFromIpc(stations)),
 		);
 	}
 
