@@ -1,6 +1,7 @@
 local util_func = require("modules/ctron_plugin/script/utility_functions")
 local debug_lib = require("modules/ctron_plugin/script/debug_lib")
 local gui_job = require("modules/ctron_plugin/script/ui_job_screen")
+local trace = require("modules/ctron_plugin/script/trace")
 
 -- injected by control.lua after all modules are loaded to avoid circular dependency
 ---@type table
@@ -305,6 +306,13 @@ entity_proc.on_object_destroyed = function(event)
             local _, new_station = next(util_func.get_service_stations(surface_index))
             if not new_station then return end
             util_func.setup_station_combinator(new_station)
+        end
+    end
+    -- v2 (spec §5): the job of a worker UE held is the destination's now (commit), or gone with it (killed while held)
+    for job_index, job in pairs(storage.jobs) do
+        if job.in_transit == event.useful_id then
+            storage.jobs[job_index] = nil
+            trace.send("ctron.cross", "handed_off", "info", job, { worker = event.useful_id })
         end
     end
     for _, job in pairs(storage.jobs) do

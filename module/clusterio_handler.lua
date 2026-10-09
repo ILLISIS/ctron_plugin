@@ -1,4 +1,5 @@
 local clusterio_api = require("modules/clusterio/api")
+local border = require("modules/ctron_plugin/script/border")
 
 local construction_job = require("modules/ctron_plugin/script/job/construction")
 local deconstruction_job = require("modules/ctron_plugin/script/job/deconstruction")
@@ -47,7 +48,7 @@ clusterio_handler.on_job_claimed = function(job_json)
 		return
 	end
 	log (serpent.block(job))
-	clusterio_handler.transmute_job(job, nil)
+	clusterio_handler.transmute_job(job, nil, job.surface_index)
 end
 
 -- This is where we would handle any necessary transformations of job data
@@ -55,10 +56,16 @@ end
 -- remapping surface indices, etc. For now we assume the job data is directly usable.
 ---@param job table
 ---@param worker LuaEntity?
-clusterio_handler.transmute_job = function(job, worker)
+---@param surface_index uint the job's surface here: a claim maps it by name, a crossing takes the arrival's (spec §5, §8)
+---@return table
+clusterio_handler.transmute_job = function(job, worker, surface_index)
 	-- Allocate a new job index and spawn a fresh instance using the job class.
 	storage.job_index = storage.job_index + 1
 	local new_job_index = storage.job_index
+	job.surface_index = surface_index
+	for _, chunk in pairs(job.chunks or {}) do
+		chunk.surface_index = surface_index
+	end
 
 	local job_type = job.job_type
 	local job_class = clusterio_handler.job_types and clusterio_handler.job_types[job_type]
@@ -105,10 +112,15 @@ clusterio_handler.transmute_job = function(job, worker)
 		}[1]
 		if station and station.valid then
 			new_job.station = station
+		elseif worker and border.off_tile(worker, job.station.position) then
+			-- v2 (spec §5): the station is on another tile. A stand-in steers the trip home; it is never reached here
+			-- (§6.4), so nothing reads its network.
+			new_job.station = { position = job.station.position, valid = true, logistic_network = {} }
 		end
 	end
 	-- Add the job to storage.jobs for execution
 	storage.jobs[new_job_index] = new_job
+	return new_job
 end
 
 -- update station count and inform clusterio controller when a station is built

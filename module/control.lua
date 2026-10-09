@@ -20,6 +20,7 @@ local gui_handlers = require("modules/ctron_plugin/script/ui")
 local clusterio_handler = require("modules/ctron_plugin/clusterio_handler")
 local pathfinder = require("modules/ctron_plugin/script/pathfinder")
 local cargo_job = require("modules/ctron_plugin/script/job/cargo")
+require("modules/ctron_plugin/script/crossing") -- v2 (spec §5): registers the constructron extension with UE, at load
 
 -- inject clusterio_handler into entity_proc after all modules are loaded (breaks circular dependency)
 entity_proc.set_clusterio_handler(clusterio_handler)

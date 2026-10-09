@@ -1049,6 +1049,8 @@ end
 --===========================================================================--
 
 function job:execute(job_index)
+    -- v2 (spec §5): UE holds the worker until it commits (the job is the destination's then) or gives it back
+    if self.in_transit then return end
     -- validate worker and station
     if not self:validate_worker() or not self:validate_station() then
         if not game.surfaces[self.surface_index] then
