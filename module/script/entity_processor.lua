@@ -152,6 +152,7 @@ end
 -- for entity deconstruction
 entity_proc.on_marked_for_deconstruction = function(event)
     local entity = event.entity
+    if entity.type == "fish" then return end -- v2 (spec §9.1): CC's event filter, which a shared handler can't register
     local surface_index = entity.surface.index
     if not storage.deconstruction_job_toggle[surface_index] or not entity then return end
     entity_proc.create_chunk(entity, storage.deconstruction_queue[surface_index], surface_index)
@@ -166,8 +167,19 @@ entity_proc.on_marked_for_upgrade = function(event)
 end
 
 -- for entity repair
+local repair_excluded_types = {
+    ["logistic-robot"] = true, ["construction-robot"] = true,
+    ["car"] = true, ["spider-vehicle"] = true,
+    ["locomotive"] = true, ["cargo-wagon"] = true, ["fluid-wagon"] = true, ["artillery-wagon"] = true,
+    ["character"] = true, ["fish"] = true
+}
+
 entity_proc.on_entity_damaged = function(event)
     local entity = event.entity
+    -- v2 (spec §9.1): CC's event filter, which a shared handler can't register
+    if event.final_health <= 0 or entity.name == "captive-biter-spawner" or repair_excluded_types[entity.type] then
+        return
+    end
     local surface_index = entity.surface.index
     if not storage.repair_job_toggle[surface_index] then return end
     if entity.force.name ~= "player" then return end

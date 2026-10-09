@@ -17,3 +17,18 @@ t.case("ctron smoke: CP runs on 2.1 with UE and CC 2.1.0 (b1 applied); a constru
 				"counted, and idle")
 		end)
 	end)
+
+t.case("ctron repair filter (spec §9.1): damaging a car queues no repair chunk, damaging a wall does", function(ctx)
+	ctx.at(10, function()
+		local surface = fx.surface("ctron-repair")
+		fx.station(surface, 10, 10)
+		fx.ctron(surface, 0, 0)
+		local queue = storage.repair_queue[surface.index]
+		local car = surface.create_entity({ name = "car", position = { 20, 20 }, force = "player" })
+		car.damage(1, "neutral")
+		ctx.expect(next(queue) == nil, "no repair chunk for a damaged car")
+		local wall = surface.create_entity({ name = "stone-wall", position = { 40, 40 }, force = "player" })
+		wall.damage(1, "neutral")
+		ctx.expect(next(queue) ~= nil, "a repair chunk for a damaged wall")
+	end)
+end)
