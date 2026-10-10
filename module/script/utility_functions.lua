@@ -450,4 +450,24 @@ function me.number(amount, append_suffix, fixed_precision)
     return formatted .. suffix
 end
 
+--- v2 (biters R23): true for UE's oracle spawners and their units (`ue-oracle`, `ue-oracle-gleba`, ...).
+---@param entity LuaEntity
+---@return boolean
+function me.is_ue_oracle(entity)
+    return entity.name:sub(1, 9) == "ue-oracle"
+end
+
+--- v2 (biters R23): the entities of a search result that are not UE oracles.
+---@param entities LuaEntity[]
+---@return LuaEntity[]
+function me.without_oracles(entities)
+    local kept = {}
+    for _, entity in pairs(entities) do
+        if not me.is_ue_oracle(entity) then
+            kept[#kept + 1] = entity
+        end
+    end
+    return kept
+end
+
 return me

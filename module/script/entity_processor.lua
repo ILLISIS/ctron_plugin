@@ -331,11 +331,11 @@ entity_proc.on_sector_scanned = function(event)
     local surface = event.radar.surface
     if not storage.destroy_job_toggle[surface.index] then return end
     local entity_surface_index = surface.index
-    local entities = game.surfaces[entity_surface_index].find_entities_filtered{
+    local entities = util_func.without_oracles(game.surfaces[entity_surface_index].find_entities_filtered{ -- v2 (biters R23)
         area = event.area,
         force = "enemy",
         type = { "unit-spawner", "turret" },
-    }
+    })
     if not next(entities) then return end
     for _, entity in pairs(entities) do
         entity_proc.create_chunk(entity, storage.destroy_queue[entity_surface_index], entity_surface_index)
@@ -590,7 +590,7 @@ end
 ---@return table<uint32, LuaEntity>
 entity_proc.recursive_enemy_search = function(enemy, enemies_list, chunk)
     local enemy_pos = enemy.position
-    local search = enemy.surface.find_entities_filtered({
+    local search = util_func.without_oracles(enemy.surface.find_entities_filtered({ -- v2 (biters R23)
         force = {"enemy"},
         area = {
             left_top = {
@@ -603,7 +603,7 @@ entity_proc.recursive_enemy_search = function(enemy, enemies_list, chunk)
             }
         },
         type = {"unit-spawner", "turret"}
-    })
+    }))
     for _, entity in pairs(search) do
         if not enemies_list[entity.unit_number] then
             -- check if the entity is in the same chunk

@@ -96,21 +96,21 @@ function destroy_job:in_progress()
         local bomb_count = self.worker_inventory.get_item_count(storage.atomic_ammo_name[self.surface_index])
         if bomb_count > 0 then
             -- find all enemy spawners in missle range
-            local entities = worker.surface.find_entities_filtered {
+            local entities = util_func.without_oracles(worker.surface.find_entities_filtered { -- v2 (biters R23)
                 position = worker.position,
                 radius = self.gun_range,
                 force = {"enemy"},
                 type = { "unit-spawner" }
-            }
+            })
             for _, entity in pairs(entities) do
                 if not self.considered_spawners[entity.unit_number] then
                     -- find clustered spawners
-                    local surounding_entities = entity.surface.find_entities_filtered {
+                    local surounding_entities = util_func.without_oracles(entity.surface.find_entities_filtered { -- v2 (biters R23)
                         position = entity.position,
                         radius = 17.5, -- default area of effect radius of atomic-bomb
                         force = {"enemy"},
                         type = { "unit-spawner" }
-                    }
+                    })
                     -- if cluster is found in range
                     if #surounding_entities > storage.destroy_min_cluster_size[self.surface_index] then
                         -- check distance between worker and target is more than minimum safe distance
@@ -226,12 +226,12 @@ function destroy_job:specific_action(threat_level)
             table.remove(self.task_positions, 1)
         else
             -- find enemy
-            local entities = worker.surface.find_entities_filtered {
+            local entities = util_func.without_oracles(worker.surface.find_entities_filtered { -- v2 (biters R23)
                 position = worker.position,
                 radius = self.gun_range,
                 force = {"enemy"},
                 is_military_target = true
-            }
+            })
             if not next(entities) then
                 table.remove(self.task_positions, 1)
             end
@@ -475,12 +475,12 @@ function destroy_job:determine_threat_level()
     -- The minimum threat modifier is 0.1
     threat_modifier = threat_modifier + math.max((threat_modifier + ((1 - healthperc) * 2) - (table_size(self.minion_jobs) * 0.05)), 0.1)
     -- Find enemy entities within a radius of 64 around the worker's position
-    local entities = worker.surface.find_entities_filtered {
+    local entities = util_func.without_oracles(worker.surface.find_entities_filtered { -- v2 (biters R23)
         position = worker.position,
         radius = self.gun_range + 4,  -- Use the gun range of the worker
         force = {"enemy"},  -- Only consider entities that belong to the enemy force
         is_military_target = true  -- Only consider entities that are military targets
-    }
+    })
     -- Initialize the threat factor based on nearby enemy entities
     local threat_factor = 0
     -- Loop through each enemy entity found

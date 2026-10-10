@@ -152,11 +152,11 @@ local find_entities = {
         return entities
     end,
     ["destroy"] = function(chunk, surface_index)
-        local entities = game.surfaces[surface_index].find_entities_filtered{
+        local entities = util_func.without_oracles(game.surfaces[surface_index].find_entities_filtered{ -- v2 (biters R23)
             area = { chunk.minimum, chunk.maximum },
             force = "enemy",
             type = { "unit-spawner", "turret" },
-        }
+        })
         if not next(entities) then return entities end
         local entity_list = {}
         -- start the actual chunk area
@@ -602,6 +602,7 @@ function job:check_chunks()
             local surface = game.surfaces[self.surface_index]
             debug_lib.draw_rectangle(chunk.minimum, chunk.maximum, surface, color, true, 600)
             local entities = surface.find_entities_filtered(entity_filter) or {}
+            if self.job_type == "destroy" then entities = util_func.without_oracles(entities) end -- v2 (biters R23)
             if next(entities) then
                 debug_lib.DebugLog('added ' .. #entities .. ' entity for ' .. self.job_type .. '.')
                 for _, entity in ipairs(entities) do
