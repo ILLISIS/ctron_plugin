@@ -3,6 +3,7 @@ local loop = require("modules/v2_test/loopback")
 local fx = require("modules/v2_test/ctron")
 local job = require("modules/ctron_plugin/script/job")
 local util_func = require("modules/ctron_plugin/script/utility_functions")
+local entity_proc = require("modules/ctron_plugin/script/entity_processor")
 
 t.case("G0: a construction job on one tile completes on 2.1: the ghost is built, the constructron idle again",
 	function(ctx)
@@ -43,13 +44,23 @@ t.case("R23: the destroy scan skips UE's oracle and finds a plain spawner at the
 				oracle = surface.create_entity({ name = name, position = { 0, 0 }, force = "enemy" })
 				ctx.expect(not job.find_chunk_entities(chunk(0, 0), "destroy"), "an oracle alone makes no destroy chunk")
 				ctx.expect(next(storage.destroy_queue[surface.index]) == nil, "and queues nothing")
-				ctx.expect(oracle.valid and oracle.health == oracle.max_health, "the oracle is undamaged")
-				oracle.destroy()
+				-- the player's destroy selection tool (shift right click), driven with a made-up event
+				entity_proc.on_player_alt_reverse_selected_area({ item = "ctron-selection-tool", entities = { oracle } })
+				ctx.expect(next(storage.destroy_queue[surface.index]) == nil, "the destroy selection tool queues no oracle")
 			else
 				game.print("R23: no ue-oracle prototype in the ctron run, only the filter is tested")
 			end
-			surface.create_entity({ name = "biter-spawner", position = { 0, 0 }, force = "enemy" })
-			ctx.expect(job.find_chunk_entities(chunk(0, 0), "destroy"), "a biter-spawner makes a destroy chunk")
+			-- the oracle stays, a spawner stands 7 tiles off: the search around the spawner (8 tiles) sees the oracle too
+			local spawner = surface.create_entity({ name = "biter-spawner", position = { 7, 0 }, force = "enemy" })
+			ctx.expect(spawner, "the spawner is placed")
+			local found = chunk(0, 0)
+			ctx.expect(job.find_chunk_entities(found, "destroy"), "a biter-spawner makes a destroy chunk")
 			ctx.expect(next(storage.destroy_queue[surface.index]) ~= nil, "queued")
+			ctx.expect(found.minimum.x == spawner.position.x and found.maximum.x == spawner.position.x
+				and found.minimum.y == spawner.position.y and found.maximum.y == spawner.position.y,
+				"the chunk's bounds cover only the spawner, not the oracle at (0, 0)")
+			if oracle then
+				oracle.destroy()
+			end
 		end)
 	end)

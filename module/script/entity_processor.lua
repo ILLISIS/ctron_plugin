@@ -407,7 +407,8 @@ entity_proc.on_player_alt_reverse_selected_area = function(event)
     if event.item ~= "ctron-selection-tool" then return end
     for _, entity in pairs(event.entities) do
         if entity and entity.valid then
-            if entity.force.name == "enemy" then
+            -- v2 (biters R23): the oracle is invisible, so a sweep over a border can't mean to target it
+            if entity.force.name == "enemy" and not util_func.is_ue_oracle(entity) then
                 local entity_surface_index = entity.surface_index
                 entity_proc.create_chunk(entity, storage.destroy_queue[entity_surface_index], entity_surface_index, true)
             end
