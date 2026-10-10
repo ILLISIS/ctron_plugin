@@ -23,7 +23,7 @@ t.case("G0: a construction job on one tile completes on 2.1: the ghost is built,
 		end)
 	end)
 
-t.case("R23: the destroy scan skips UE's oracle and finds a plain spawner at the same spot (biters R23)",
+t.case("R23: the destroy scan skips UE's oracle and finds a plain spawner 7 tiles away (biters R23)",
 	function(ctx)
 		local surface, oracle
 		local function chunk(x, y)
@@ -39,6 +39,7 @@ t.case("R23: the destroy scan skips UE's oracle and finds a plain spawner at the
 			-- the ctron run may not load UE's data mod: then the oracle is a stand-in with the oracle's name prefix
 			local name = prototypes.entity["ue-oracle"] and "ue-oracle" or nil
 			ctx.expect(util_func.is_ue_oracle({ name = "ue-oracle-gleba" }), "the prefix covers ue-oracle-gleba")
+			ctx.expect(util_func.is_ue_oracle({ name = "ue-oracle-unit" }), "and ue-oracle-unit")
 			ctx.expect(not util_func.is_ue_oracle({ name = "biter-spawner" }), "a biter-spawner is no oracle")
 			if name then
 				oracle = surface.create_entity({ name = name, position = { 0, 0 }, force = "enemy" })
