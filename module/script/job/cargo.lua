@@ -17,8 +17,9 @@ end
 
 cargo_job.on_nth_tick_600 = function()
     cargo_job.prospect_cargo_jobs()
-    for surface_index, _ in pairs(storage.managed_surfaces) do
-        cargo_job.process_cargo_job_queue(surface_index)
+    -- v2: a request needs a station, not a constructron here; another tile's constructron may serve it
+    for surface_index, count in pairs(storage.stations_count) do
+        if count > 0 then cargo_job.process_cargo_job_queue(surface_index) end
     end
 end
 
