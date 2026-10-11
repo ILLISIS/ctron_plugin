@@ -129,6 +129,7 @@ local entity_types = {
 ---| EventData.script_raised_built
 entity_proc.on_built_entity = function(event)
     local entity = event.entity
+    if not (entity and entity.valid) then return end -- v2: another mod's handler may have destroyed it already
     local surface_index = entity.surface.index
     if storage.construction_job_toggle[surface_index] and entity_types[entity.type] then
         entity_proc.create_chunk(entity, storage.construction_queue[surface_index], surface_index)
@@ -153,6 +154,7 @@ end
 -- for entity deconstruction
 entity_proc.on_marked_for_deconstruction = function(event)
     local entity = event.entity
+    if not (entity and entity.valid) then return end -- v2: another mod's handler may have destroyed it already
     if entity.type == "fish" then return end -- v2 (spec §9.1): CC's event filter, which a shared handler can't register
     local surface_index = entity.surface.index
     if not storage.deconstruction_job_toggle[surface_index] or not entity then return end
@@ -162,6 +164,7 @@ end
 -- for entity upgrade
 entity_proc.on_marked_for_upgrade = function(event)
     local entity = event.entity
+    if not (entity and entity.valid) then return end -- v2: another mod's handler may have destroyed it already
     local surface_index = entity.surface.index
     if not storage.upgrade_job_toggle[surface_index] or entity.force.name ~= "player" then return end
     entity_proc.create_chunk(entity, storage.upgrade_queue[surface_index], surface_index)
@@ -177,6 +180,7 @@ local repair_excluded_types = {
 
 entity_proc.on_entity_damaged = function(event)
     local entity = event.entity
+    if not (entity and entity.valid) then return end -- v2: another mod's handler may have destroyed it already
     -- v2 (spec §9.1): CC's event filter, which a shared handler can't register
     if event.final_health <= 0 or entity.name == "captive-biter-spawner" or repair_excluded_types[entity.type] then
         return
@@ -189,6 +193,7 @@ end
 
 entity_proc.on_entity_cloned = function(event)
     local entity = event.destination
+    if not (entity and entity.valid) then return end -- v2: another mod's handler may have destroyed it already
     local surface_index = entity.surface.index
     if storage.constructron_names[entity.name] then
         local registration_number = script.register_on_object_destroyed(entity)
@@ -232,6 +237,7 @@ end
 
 entity_proc.script_raised_teleported = function(event)
     local entity = event.entity
+    if not (entity and entity.valid) then return end -- v2: another mod's handler may have destroyed it already
     local surface_index = entity.surface_index
     if surface_index == event.old_surface_index then return end
     if storage.constructron_names[entity.name] then

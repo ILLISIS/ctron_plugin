@@ -32,3 +32,19 @@ t.case("ctron repair filter (spec §9.1): damaging a car queues no repair chunk,
 		ctx.expect(next(queue) ~= nil, "a repair chunk for a damaged wall")
 	end)
 end)
+
+t.case("ctron handlers: an entity another mod's handler destroyed earlier in the event is skipped, not a crash", function(ctx)
+	ctx.at(10, function()
+		local surface = fx.surface("ctron-dead")
+		local wall = surface.create_entity({ name = "stone-wall", position = { 5, 5 }, force = "player" })
+		wall.destroy()
+		local events = defines.events
+		for name, event in pairs({ script_raised_built = { entity = wall }, on_built_entity = { entity = wall },
+			on_marked_for_deconstruction = { entity = wall }, on_marked_for_upgrade = { entity = wall },
+			on_entity_damaged = { entity = wall, final_health = 5 }, on_entity_cloned = { destination = wall },
+			script_raised_teleported = { entity = wall, old_surface_index = surface.index } }) do
+			local ok, err = pcall(script.get_event_handler(events[name]), event)
+			ctx.expect(ok, name .. " survives a destroyed entity: " .. tostring(err))
+		end
+	end)
+end)
