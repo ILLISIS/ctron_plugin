@@ -128,3 +128,18 @@ t.case("G12: the destination station removed mid-trip sends the cargo home", fun
 			"the second crossing goes B-ward")
 	end)
 end)
+
+t.case("cargo: a station on a tile with no constructron still publishes its request", function(ctx)
+	local alone, st
+	ctx.at(10, function()
+		alone = fx.surface("ctron-cargo-noctron")
+		loop.ground(-20, -20, 300, 120, alone.name)
+		st = fx.station(alone, 10, 10, {})
+	end)
+	ctx.at(12, function()
+		request(st, 0)
+	end)
+	fx.wait(ctx, 13, 1300, "published", function()
+		return #published(alone) == 1
+	end, function() end)
+end)
