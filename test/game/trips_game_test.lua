@@ -1,10 +1,11 @@
 local t = require("modules/v2_test/testlib")
 local fx = require("modules/v2_test/ctron")
+local loop = require("modules/v2_test/loopback")
 local deconstruction_job = require("modules/ctron_plugin/script/job/deconstruction")
 local destroy_job = require("modules/ctron_plugin/script/job/destroy")
 local minion_job = require("modules/ctron_plugin/script/job/minion")
 
--- Whole trips (spec §12): G5, G7, G8 and G10.
+-- Whole trips (spec §12): G5, G7, G8, G10 and G13.
 
 t.case("G5: a ghost in B, the station and stock in A: the job is made on A, crosses, builds, crosses back and " ..
 	"finishes at the station; the constructron ends idle there", function(ctx)
@@ -132,5 +133,46 @@ t.case("G10: a destroy leader crosses alone: its minion goes home and never cros
 			ctx.expect(minion.valid and minion.position.y > fx.B + 100, "the minion stayed on A")
 			ctx.expect(#fx.lines_of(mjob.key, "ctron.cross") == 0, "no minion crossing")
 		end)
+	end)
+end)
+
+--- Playtest 2 #9 (2026-10-12, gridworld_-1_-1): a goal on the worker's own tile that a lake against the border cuts off.
+--- The spider pathfinder routes round the lake through the neighbour's area, past A's line; nothing put the constructron on
+--- UE's watch, so its legs met UE's barriers there and it hung over the border. Now it crosses out on that path, follows
+--- the rest of it in B, and crosses back to the goal.
+t.case("G13: a lake against the border cuts the goal off on A: the path round it through B's area crosses out and " ..
+	"back, and the constructron reaches the goal", function(ctx)
+	local surface, key
+	local goal = { x = 52, y = 3050 }
+	ctx.at(10, function()
+		surface = fx.surface("ctron-g13")
+		fx.pair(surface, "ctron-g13", 0)
+		loop.ground(-20, 2980, 84, 2990, surface.name) -- room for the path's 10×10 box past the lake, short of B
+		loop.ground(-20, 3150, 84, 3420, surface.name) -- ground under the lake's south end, so it is made
+		local tiles = {}
+		for x = 24, 40 do
+			for y = fx.A - 4, fx.A + 410 do -- from 4 out, short of UE's barriers (6 out), which water would remove
+				tiles[#tiles + 1] = { name = "deepwater", position = { x, y } }
+			end
+		end
+		surface.set_tiles(tiles)
+	end)
+	ctx.at(12, function()
+		local v = fx.ctron(surface, 12, 3050)
+		key = fx.job(v, goal, fx.station(surface, 12, 3110)).key -- a real one: the job finishes there
+	end)
+	local hung
+	fx.wait(ctx, 13, 6000, "the goal reached by way of B", function()
+		for _, v in ipairs(surface.find_entities_filtered({ name = "constructron" })) do
+			-- past A's line by 2 (UE's capture is at 0.5, within 10 ticks), neither watched nor held by a capture
+			if not hung and v.position.y < fx.A - 2 and v.position.y > fx.A - 30 and not v.disabled_by_script
+				and not storage.universal_edges.watch[v.unit_number] then
+				hung = true
+				ctx.expect(false, string.format("hung past A's line, unwatched, at %.1f, %.1f", v.position.x, v.position.y))
+			end
+		end
+		return surface.count_entities_filtered({ name = "constructron", position = goal, radius = 4 }) > 0
+	end, function()
+		ctx.expect(#fx.lines_of(key, "ctron.cross", "arrived") == 2, "out and back: " .. fx.phases(key, "ctron.cross"))
 	end)
 end)
