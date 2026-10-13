@@ -59,11 +59,24 @@ function border.goal(job, position)
 	return { x = plan.x, y = plan.y }
 end
 
---- watch(job): once a path to P arrives, the worker goes on UE's watch again; UE dropped it while the path was being
---- computed, since it then had no autopilot (§6.4).
-function border.watch(job)
-	if job.crossing and job.worker and job.worker.valid then
-		ue.vehicles.watch(job.worker)
+--- watch(job, path): once a path arrives, the worker goes on UE's watch again when it heads for P (UE dropped it while
+--- the path was being computed, since it then had no autopilot, §6.4), or when any of path's waypoints lies off the tile:
+--- the spider pathfinder routes round border water through a neighbour's area, and UE carries it across there and back
+--- (playtest 2 #9: unwatched, its legs met UE's barriers and it hung over the border).
+function border.watch(job, path)
+	local worker = job.worker
+	if not (worker and worker.valid) then
+		return
+	end
+	local out = job.crossing ~= nil
+	for _, waypoint in ipairs(path or {}) do
+		if out then
+			break
+		end
+		out = border.off_tile(worker, waypoint.position)
+	end
+	if out then
+		ue.vehicles.watch(worker)
 	end
 end
 

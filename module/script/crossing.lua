@@ -68,6 +68,7 @@ function crossing.capture(ep, v)
 	if dest and dest.valid then
 		data.destination_station = { position = { x = dest.position.x, y = dest.position.y } }
 	end
+	data.through = job.crossing == nil or nil -- crossing on a path through the neighbour, not a planned hop to P
 	local network = v.logistic_cell and v.logistic_cell.logistic_network
 	trace.send("ctron.cross", "captured", "info", job, { edge = ep.edge, planned_edge = job.crossing and job.crossing.edge,
 		state = job.state, robots_out = network and #network.construction_robots or 0 })
@@ -82,8 +83,12 @@ function crossing.materialized(ep, v, data, meta)
 	end
 	entity_proc.new_ctron_built(v, v.surface_index)
 	if data then
+		local through = data.through
+		data.through = nil
 		local job = clusterio_handler.transmute_job(data, v, v.surface_index)
-		v.autopilot_destination = nil -- the leftover waypoint is P, mirrored: the job re-paths from here (§6.5)
+		if not through then
+			v.autopilot_destination = nil -- the leftover waypoint is P, mirrored: the job re-paths from here (§6.5)
+		end -- a path through the neighbour goes on: its waypoints, mirrored, lead on and back (playtest 2 #9)
 		trace.send("ctron.cross", "arrived", "info", job, { edge = ep.edge, trace = meta.trace })
 	end
 end
