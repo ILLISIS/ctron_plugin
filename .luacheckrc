@@ -13,7 +13,7 @@ stds.factorio = {
 }
 files["**/module/**/*.lua"] = { std = "lua52+factorio" }
 files["**/module/**/*_core.lua"] = { std = "lua52" }
-files["**/test/game/**/*.lua"] = { std = "lua52+factorio", read_globals = { "ctron_plugin_on_job_claimed" } }
+files["**/test/game/**/*.lua"] = { std = "lua52+factorio", read_globals = { "ue_rt" } }
 -- module/ is a fork of Constructron-Continued's runtime (Constructron v2 spec §9.1), kept as CC writes it so each
 -- re-sync is a plain diff: luacheck checks only its syntax. This plugin's own files in it are linted in full.
 files["module/**/*.lua"] = { ignore = { "." } }
