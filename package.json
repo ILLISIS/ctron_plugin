@@ -2,6 +2,8 @@
 	"name": "ctron_plugin",
 	"version": "0.0.1",
 	"description": "Constructrons across Clusterio instances: a controller job pool, and jobs that ride Universal Edges v2",
+	"license": "SEE LICENSE IN LICENSE",
+	"repository": { "type": "git", "url": "https://github.com/ILLISIS/ctron_plugin" },
 	"private": true,
 	"type": "module",
 	"main": "dist/node/index.js",
@@ -10,11 +12,11 @@
 	"peerDependencies": {
 		"@clusterio/controller": "workspace:^",
 		"@clusterio/host": "workspace:^",
-		"@clusterio/lib": "workspace:^"
+		"@clusterio/lib": "workspace:^",
+		"universal_edges": "workspace:^"
 	},
 	"dependencies": {
-		"@sinclair/typebox": "catalog:",
-		"universal_edges": "workspace:*"
+		"@sinclair/typebox": "catalog:"
 	},
 	"devDependencies": {
 		"@clusterio/controller": "workspace:^",
@@ -27,6 +29,7 @@
 		"react": "catalog:",
 		"react-dom": "catalog:",
 		"typescript": "catalog:",
+		"universal_edges": "workspace:^",
 		"webpack": "catalog:",
 		"webpack-cli": "catalog:",
 		"webpack-merge": "catalog:"
