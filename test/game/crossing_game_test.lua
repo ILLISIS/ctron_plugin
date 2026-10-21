@@ -1,197 +1,236 @@
+-- G10 (P2 Task 7): a run rides UE's vehicle crossing: the cid and the run survive, the source drops silently, a refusal
+-- gives the run back, an idle ctron crosses without one, and the run resumes its legs on the far side.
 local t = require("modules/v2_test/testlib")
-local loop = require("modules/v2_test/loopback")
-local fx = require("modules/v2_test/ctron")
+local fx = require("modules/v2_test/ctronv2")
+local ct = require("modules/ctron_pluginv2/ct")
 local ue = require("modules/universal_edges")
+local connectors = require("modules/universal_edges/edges/connectors")
+local crossing = require("modules/ctron_pluginv2/crossing")
+local events_of, cid_of, share, assign, charge = fx.events_of, fx.cid_of, fx.share, fx.assign, fx.charge
 
--- The crossing glue (spec §5, §7): G1–G4 and Review Focus 4–5. Each case: a constructron on A with a job whose task
--- lies in B, its station a stand-in on A.
-
-local function S()
-	return storage.universal_edges
-end
-
---- The live jobs with key: not paused for a crossing.
-local function live(key)
-	local n = 0
-	for _, job in pairs(storage.jobs) do
-		n = n + ((job.key == key and not job.in_transit) and 1 or 0)
+-- The source's send answers too_big for an edge in this set; the original runs otherwise.
+local too_big = {}
+local ep_send = connectors.methods.send
+connectors.methods.send = function(ep, dir, payload)
+	if ep.type == "vehicle" and too_big[ep.edge] then
+		return nil, "too_big"
 	end
-	return n
+	return ep_send(ep, dir, payload)
 end
 
---- Case c's surface, edge, constructron and job; seam(c) runs before the job exists.
-local function setup(ctx, c, name, seam)
-	ctx.at(10, function()
-		c.surface = fx.surface(name)
-		c.ex, c.ey = fx.pair(c.surface, name, 0)
-		if seam then
-			seam(c)
+-- The arrival is uncharged, so registry.fit fails and nothing paints it idle. A case that sets `fit_all` has every ctron
+-- fit, so an idle repaint at arrival really happens unless crossing re-applies the run's paint.
+local fit_all = false
+-- unfit_on: a surface whose fit tests fail as live on the tick UE creates the ctron, before its logistic cell is up.
+-- Per surface, ahead of fit_all: the cases run side by side in one save.
+local unfit_on
+local real_fit = ct.registry.fit
+ct.registry.fit = function(entity)
+	if unfit_on and entity.surface.name == unfit_on then
+		return false, "no_roboports"
+	elseif fit_all then
+		return true
+	end
+	return real_fit(entity)
+end
+
+-- Every restored call UE makes, by edge: proves the refusal case really captured and gave back.
+local restored = {}
+ue.transfers.extend({ name = "ctronv2_g10_test", types = { vehicle = true },
+	restored = function(ep, _, why)
+		restored[ep.edge] = why
+	end,
+})
+
+--- A case: its own surface with the looped edge, a station and a ctron near side a (y = 3000).
+local function setup(c, name)
+	c.surface = fx.surface("ctv2-g10-" .. name)
+	c.ex = fx.pair(c.surface, "g10" .. name, 0)
+	c.station = fx.station(c.surface, 32, 3030, { ["construction-robot"] = 60, ["wooden-chest"] = 50 })
+	c.v = fx.ctron(c.surface, 26, 3030, { robots = 10 })
+	c.cid = cid_of(c.v)
+end
+
+--- Make it idle (a later tick than setup, as G9's start).
+local function start(c)
+	charge(c.v)
+	ct.registry.set_state(c.cid, "idle")
+end
+
+--- Force the crossing the way UE's own vehicle tests do: watch the entity and send it 3 tiles past side a's line.
+local function force(v)
+	ue.vehicles.watch(v)
+	v.autopilot_destination = { v.position.x, fx.A - 3 }
+end
+
+--- Hand the ctron a construction run whose ghost is at (32.5, gy + 0.5) and wait for it in to_work. With `far`, the
+--- share reaches up to side b's y = far and holds a second ghost there: no path joins the two regions, so the leg
+--- before the crossing goes to the ghost on side a and the re-pick after it finds the nearer one.
+local function run_to_work(ctx, c, jid, gy, from, done, far)
+	ctx.at(from - 2, function()
+		start(c)
+	end)
+	ctx.at(from, function()
+		fx.ghost(c.surface, 32.5, gy + 0.5)
+		if far then
+			fx.ghost(c.surface, 32.5, far + 0.5)
 		end
+		assign(jid, "construction", c.surface, { c.v }, c.station,
+			{ share(c.surface, "construction", 28, (far or gy) - 5, 38, gy + 5, { { "wooden-chest", "normal", 1 } }, 0) })
 	end)
-	ctx.at(12, function()
-		c.v = fx.ctron(c.surface, 32, 3050)
-		c.job = fx.job(c.v, { x = 40, y = 1950 }, fx.stand_in(32, 3100))
-		c.key = c.job.key
+	fx.wait(ctx, from + 2, 3000, "the run in to_work", function()
+		charge(c.v)
+		local run = ct.runs.get(c.cid)
+		local leg = run and storage.ctron_pluginv2.travel.units[c.v.unit_number]
+		leg = leg and leg.leg
+		-- Once the leg's path request is answered: a late reply would replace the forced destination.
+		return run and run.state == "to_work" and leg and not leg.pending
+	end, done)
+end
+
+--- Wait for the cid's entity to be a new one, then call done(offset, entity).
+local function crossed(ctx, c, from, done)
+	fx.wait(ctx, from, 600, "the ctron on side b", function()
+		local rec = ct.registry.ctron(c.cid)
+		return rec and rec.entity.valid and rec.entity ~= c.v and not c.v.valid and rec.entity
+	end, function(k)
+		local e = ct.registry.ctron(c.cid).entity
+		charge(e)
+		done(k, e)
 	end)
 end
 
-t.case("G1: a job rides the crossing: after commit one live job, on B, its key and state kept, its chunks' surface " ..
-	"rewritten, its station a stand-in; the source's job dropped at on_object_destroyed; counts right; no reassignment",
-	function(ctx)
-		local c, idle = {}, nil
-		setup(ctx, c, "ctron-g1")
-		ctx.at(13, function()
-			idle = fx.ctron(c.surface, 10, 3120) -- idle all along: nothing gives it the paused job
-			c.job.chunks = { [312337500] = { key = 312337500, surface_index = 99,
-				minimum = { x = 35, y = 1945 }, maximum = { x = 45, y = 1955 } } }
+t.case("G10 capture, materialize and commit keep the cid and the run", function(ctx)
+	local c = {}
+	ctx.at(10, function()
+		setup(c, "keep")
+	end)
+	run_to_work(ctx, c, "g10-keep", 3105, 16, function(k)
+		local run = ct.runs.get(c.cid)
+		c.jid, c.state = run.jid, run.state
+		-- A landfill run walks to_work with logistics on; the arrival must not undo it.
+		run.logi, c.v.enable_logistics_while_moving = true, true
+		c.color = c.v.color
+		fit_all = true
+		force(c.v)
+		crossed(ctx, c, k + 1, function(_, e)
+			fit_all = false
+			local now = ct.runs.get(c.cid)
+			ctx.expect(e.position.y < fx.B + 10, "near side b: y = " .. e.position.y)
+			ctx.expect(storage.ctron_pluginv2.by_unit[e.unit_number] == c.cid, "the cid follows the unit")
+			ctx.expect(now and now.unit == e.unit_number, "the run's unit is the new one")
+			ctx.expect(now.in_transit == nil, "not in transit")
+			ctx.expect(now.jid == c.jid, "same job")
+			ctx.expect(ct.registry.ctron(c.cid).entity == e, "the record holds the new entity")
+			ctx.expect(#events_of(c.jid, "lost") == 0, "no lost event")
+			ctx.expect(#ct.runs.of_job(c.jid) == 1, "one run for the job")
+			ctx.expect(e.enable_logistics_while_moving == true, "logistics while moving kept")
+			ctx.expect(serpent.line(e.color) == serpent.line(c.color), "the busy paint kept: " .. serpent.line(e.color))
 		end)
-		fx.wait(ctx, 14, 3000, "the crossing committed and the source's job dropped", function()
-			return not c.v.valid and storage.jobs[c.job.job_index] == nil and fx.by_key(c.key) ~= nil
+	end)
+end)
+
+t.case("G10 commit deletes the source run silently", function(ctx)
+	-- The looped fixture re-registers the cid before the source dies, so it can't show the source's drop. Capture by
+	-- hand and destroy the entity as UE's commit does: a real source (another save) has no destination to replace it.
+	local c = {}
+	ctx.at(10, function()
+		setup(c, "silent")
+	end)
+	run_to_work(ctx, c, "g10-silent", 3105, 16, function(k)
+		c.jid = ct.runs.get(c.cid).jid
+		ctx.expect(crossing.capture({ edge = "g10" }, c.v) ~= nil, "captured")
+		c.v.destroy({ raise_destroy = true })
+		ctx.at(k + 10, function()
+			ctx.expect(#events_of(c.jid, "lost") == 0, "no lost event")
+			ctx.expect(storage.ctron_pluginv2.runs[c.cid] == nil, "the run is gone")
+			ctx.expect(ct.registry.ctron(c.cid) == nil, "the record is gone")
+			ctx.expect(#ct.runs.of_job(c.jid) == 0, "no run for the job")
+		end)
+	end)
+end)
+
+t.case("G10 a refused crossing gives the run back", function(ctx)
+	local c = {}
+	ctx.at(10, function()
+		setup(c, "refuse")
+		too_big[c.ex] = true
+	end)
+	run_to_work(ctx, c, "g10-refuse", 3105, 16, function(k)
+		local run = ct.runs.get(c.cid)
+		c.state = run.state
+		force(c.v)
+		fx.wait(ctx, k + 1, 600, "UE giving it back", function()
+			return restored[c.ex]
 		end, function()
-			local got = fx.by_key(c.key)
-			ctx.expect(live(c.key) == 1, "exactly one live job with the key")
-			ctx.expect(got.worker and got.worker.valid and got.worker.position.y < fx.B, "its worker is in B")
-			ctx.expect(got.state == "in_progress" and got.in_transit == nil, "the state kept, not paused")
-			ctx.expect(got.surface_index == c.surface.index, "the job's surface")
-			for _, chunk in pairs(got.chunks) do
-				ctx.expect(chunk.surface_index == c.surface.index, "a chunk's surface rewritten: " .. chunk.surface_index)
-			end
-			ctx.expect(got.station.object_name == nil and got.station.valid == true and got.station.position.y == 3100,
-				"the station is a stand-in at A's station")
-			ctx.expect(storage.constructrons_count[c.surface.index] == 2, "counts: the arrival and the idle one")
-			ctx.expect(not storage.constructron_statuses[idle.unit_number].busy, "the idle one never got the job")
-			ctx.expect(fx.phases(c.key, "ctron.cross") == "captured,arrived,handed_off",
-				"lines: " .. fx.phases(c.key, "ctron.cross"))
-		end)
-	end)
-
-t.case("G2: a rejected crossing gives the job back on A, waits 5 minutes without a watch, then retries and crosses",
-	function(ctx)
-		local c = {}
-		setup(ctx, c, "ctron-g2", function(x)
-			fx.reject[x.ey] = true
-		end)
-		fx.wait(ctx, 13, 3000, "the refusal", function()
-			return c.job.cross_wait_until ~= nil
-		end, function(k)
-			ctx.expect(c.job.in_transit == nil and storage.jobs[c.job.job_index] == c.job and live(c.key) == 1,
-				"the job stays on A, and runs")
-			ctx.expect(c.job.cross_wait_until >= game.tick + 17900, "a 5-minute wait")
-			local restored = fx.lines_of(c.key, "ctron.cross", "restored")
-			ctx.expect(#restored == 1 and restored[1].fields.why == "reject" and restored[1].level == "error",
-				"restored reject, logged at error")
-			ctx.at(k + 400, function() -- four job passes
-				ctx.expect(S().rejected[c.v.unit_number] and S().watch[c.v.unit_number] == nil, "no watch while it waits")
-				ctx.expect(c.job.waiting == "refused" and #fx.lines_of(c.key, "ctron.path", "waiting") == 1,
-					"waiting refused, logged once")
-				fx.reject[c.ey] = nil
-				c.job.cross_wait_until = game.tick -- the 5 minutes pass (R20)
-				fx.wait(ctx, k + 401, 3000, "the retry", function()
-					return not c.v.valid and fx.by_key(c.key) ~= nil and storage.jobs[c.job.job_index] == nil
-				end)
-			end)
-		end)
-	end)
-
-t.case("G3: the edge removed while the constructron is held gives it back (close): the job runs again, W is on the " ..
-	"watch, and the job waits on the gone side", function(ctx)
-	local c = {}
-	setup(ctx, c, "ctron-g3", function(x)
-		fx.busy[x.ey] = true
-	end)
-	fx.wait(ctx, 13, 3000, "held", function()
-		return c.job.in_transit ~= nil
-	end, function(k)
-		ctx.at(k + 30, function()
-			loop.connectors("ctron-g3", 2, {}, true)
-		end)
-		fx.wait(ctx, k + 31, 1500, "given back", function()
-			return c.job.in_transit == nil
-		end, function(k2)
-			ctx.expect(c.v.valid and not c.v.disabled_by_script and S().watch[c.v.unit_number] == c.v,
-				"unfrozen, on UE's watch")
-			ctx.expect(c.job.cross_wait_until == nil and live(c.key) == 1, "the job runs again, no wait")
-			local restored = fx.lines_of(c.key, "ctron.cross", "restored")
-			ctx.expect(#restored == 1 and restored[1].fields.why == "close" and restored[1].level == "warn",
-				"restored close, logged at warn")
-			fx.wait(ctx, k2 + 1, 400, "a wait on the gone side", function()
-				return c.job.waiting == "edge_inactive"
-			end)
+			local now = ct.runs.get(c.cid)
+			ctx.expect(restored[c.ex] == "too_big", "UE gave it back: " .. tostring(restored[c.ex]))
+			ctx.expect(c.v.valid and ct.registry.ctron(c.cid).entity == c.v, "still the same entity")
+			-- given back where UE captured it, a few tiles past side a's line (2.3 since the raid oracle's unit stopped
+			-- colliding, UE's oracle revert 2026-10-20; side b is 1000 tiles away)
+			ctx.expect(c.v.position.y > fx.A - 5, "on side a: y = " .. c.v.position.y)
+			ctx.expect(now and now.in_transit == nil, "not in transit")
+			ctx.expect(now.state == c.state, "the state is what it was: " .. tostring(now.state))
+			ctx.expect(ct.registry.ctron(c.cid).in_transit == nil, "the record is not in transit")
 		end)
 	end)
 end)
 
-t.case("G4: a body over the cap (too_big) is refused at once: as a reject", function(ctx)
+t.case("G10 an idle ctron crosses with its cid and no run", function(ctx)
 	local c = {}
-	setup(ctx, c, "ctron-g4", function(x)
-		fx.too_big[x.ex] = true
+	ctx.at(10, function()
+		setup(c, "idle")
 	end)
-	fx.wait(ctx, 13, 3000, "the refusal", function()
-		return c.job.cross_wait_until ~= nil
-	end, function(k)
-		ctx.expect(c.job.in_transit == nil and live(c.key) == 1 and S().rejected[c.v.unit_number],
-			"the job stays on A; UE marked W rejected")
-		ctx.expect(not c.v.disabled_by_script, "never frozen")
-		local restored = fx.lines_of(c.key, "ctron.cross", "restored")
-		ctx.expect(#restored == 1 and restored[1].fields.why == "too_big", "restored too_big")
-		fx.too_big[c.ex] = nil
-		c.job.cross_wait_until = game.tick
-		fx.wait(ctx, k + 1, 3000, "the retry", function()
-			return not c.v.valid and storage.jobs[c.job.job_index] == nil and fx.by_key(c.key) ~= nil
-		end)
+	ctx.at(14, function()
+		start(c)
+	end)
+	ctx.at(16, function()
+		force(c.v)
+	end)
+	crossed(ctx, c, 18, function(_, e)
+		ctx.expect(storage.ctron_pluginv2.by_unit[e.unit_number] == c.cid, "same cid")
+		local rec = ct.registry.ctron(c.cid)
+		ctx.expect(rec.state ~= "busy" and rec.jid == nil, "not busy, no job: " .. tostring(rec.state))
+		-- The fixture's reactor has no fuel, so the new entity needs its charge before it counts as fit.
+		ct.registry.set_state(c.cid, "idle")
+		ctx.expect(ct.registry.ctron(c.cid).state == "idle", "idle: " .. tostring(ct.registry.ctron(c.cid).state))
+		ctx.expect(ct.runs.get(c.cid) == nil, "no run")
 	end)
 end)
 
-t.case("a busy destination holds the constructron: the job stays paused, then crosses once (Review Focus 4)",
-	function(ctx)
-		local c = {}
-		setup(ctx, c, "ctron-rf4", function(x)
-			fx.busy[x.ey] = true
-		end)
-		fx.wait(ctx, 13, 3000, "held", function()
-			return c.job.in_transit ~= nil
-		end, function(k)
-			local state, ran = c.job.state, false
-			c.job.validate_worker = function() -- execute reaches this unless its in-transit skip holds
-				ran = true
-				return false
-			end
-			ctx.at(k + 600, function()
-				ctx.expect(c.v.valid and c.v.disabled_by_script and c.job.in_transit ~= nil, "still held, paused")
-				ctx.expect(c.job.state == state and live(c.key) == 0 and fx.by_key(c.key) == c.job, "not run, not copied")
-				ctx.expect(not ran, "execute skipped the held job")
-				c.job.validate_worker = nil
-				fx.busy[c.ey] = nil
-				fx.wait(ctx, k + 601, 2400, "the crossing", function()
-					return not c.v.valid and storage.jobs[c.job.job_index] == nil and fx.by_key(c.key) ~= nil
-				end, function()
-					ctx.expect(live(c.key) == 1, "one live job, on B")
-				end)
-			end)
-		end)
-	end)
+local UNFIT = { no_roboports = true, no_power = true, bad_roboports = true, robots_out = true } -- registry.fit's
 
-t.case("an idle constructron driven across is registered on arrival: counted once, idle, no job (Review Focus 5)",
-	function(ctx)
-		local surface, v
-		ctx.at(10, function()
-			surface = fx.surface("ctron-rf5")
-			fx.pair(surface, "ctron-rf5", 0)
-		end)
-		ctx.at(12, function()
-			v = fx.ctron(surface, 32, 3010)
-			v.autopilot_destination = { 32, 2997 } -- past the line, as a player would steer it
-			ue.vehicles.watch(v)
-		end)
-		fx.wait(ctx, 13, 2000, "the crossing", function()
-			return not v.valid
-		end, function(k)
-			ctx.at(k + 2, function()
-				local arrived = surface.find_entities_filtered({ name = "constructron", area = { { -20, 1850 }, { 84, 2000 } } })
-				local w = arrived[1]
-				ctx.expect(#arrived == 1 and storage.constructrons[w.unit_number] == w, "registered on arrival")
-				ctx.expect(storage.constructrons_count[surface.index] == 1, "counted once")
-				ctx.expect(not storage.constructron_statuses[w.unit_number].busy and #fx.jobs(surface) == 0, "idle, no job")
+-- It also checks that registering the arrival raises none of the idle fit test's codes while that test fails, as it
+-- does live on the creation tick (owner, 2026-10-21: "'missing roboports' shows when a constructron crosses an edge
+-- whilst on a job"). A case of its own changed the shared save enough to fail G12's fight and add a minute to the run.
+t.case("G10 the run resumes its legs after arrival; the arrival raises no unfit status", function(ctx)
+	local c = {}
+	ctx.at(10, function()
+		setup(c, "resume")
+	end)
+	run_to_work(ctx, c, "g10-resume", 3105, 16, function(k)
+		c.jid = ct.runs.get(c.cid).jid
+		local codes, on_status = {}, ct.gui.on_status
+		ct.gui.on_status = function(entity, code, arg)
+			if UNFIT[code] then -- the run's own statuses after the re-pick are its business
+				codes[#codes + 1] = code
+			end
+			return on_status(entity, code, arg)
+		end
+		unfit_on = c.surface.name
+		force(c.v)
+		crossed(ctx, c, k + 1, function(k2)
+			unfit_on = nil
+			ct.gui.on_status = on_status
+			ctx.expect(#codes == 0, "no unfit status at arrival: " .. table.concat(codes, ","))
+			fx.wait(ctx, k2 + 1, 2400, "the run at_task", function()
+				local rec = ct.registry.ctron(c.cid)
+				charge(rec.entity)
+				local run = ct.runs.get(c.cid)
+				return run and run.state == "at_task"
+			end, function()
+				ctx.expect(#events_of(c.jid, "lost") == 0, "no lost event")
 			end)
 		end)
-	end)
+	end, 1960)
+end)

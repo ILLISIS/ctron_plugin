@@ -9,5 +9,5 @@
 		"noEmitOnError": true,
 		"outDir": "dist/browser"
 	},
-	"include": ["web/**/*.tsx", "web/**/*.ts", "index.ts", "messages.ts", "package.json"]
+	"include": ["web/**/*.tsx", "web/**/*.ts", "index.ts", "messages.ts", "contracts.ts", "package.json"]
 }

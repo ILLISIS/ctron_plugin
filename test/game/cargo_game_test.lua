@@ -1,145 +1,146 @@
 local t = require("modules/v2_test/testlib")
-local loop = require("modules/v2_test/loopback")
-local fx = require("modules/v2_test/ctron")
+local fx = require("modules/v2_test/ctronv2")
+local ct = require("modules/ctron_pluginv2/ct")
+local report = require("modules/ctron_pluginv2/report")
 
--- Cross-tile cargo (research option 1, spec §13 phase 5). In one save every station shares a surface, so "local" can't
--- tell tiles apart: the publish decision (the first case) and the trip (G11, G12) are tested separately.
-
-local function request(station, in_transit, min)
-	storage.station_requests[station.unit_number][1] = { name = "iron-plate", quality = "normal", min = min or 10,
-		max = 20, in_transit_count = in_transit }
+-- Every job event the module sends, in order; the originals still run.
+local events = {}
+local real_event = report.event
+report.event = function(jid, ev, fields)
+	events[#events + 1] = { jid = jid, ev = ev, fields = fields or {} }
+	return real_event(jid, ev, fields)
 end
 
-local function plates(surface, x, y)
-	local chest = surface.find_entities_filtered({ name = "storage-chest", position = { x, y }, radius = 1 })[1]
-	return chest and chest.get_item_count("iron-plate") or 0
-end
-
-local function cargo_jobs(surface)
+local function events_of(jid, ev)
 	local out = {}
-	for _, job in ipairs(fx.jobs(surface)) do
-		if job.job_type == "cargo" then
-			out[#out + 1] = job
+	for _, e in ipairs(events) do
+		if e.jid == jid and e.ev == ev then
+			out[#out + 1] = e
 		end
 	end
 	return out
 end
 
-local function published(surface)
-	local out = {}
-	for _, line in ipairs(fx.lines) do
-		if line.op == "ctron.pool" and line.phase == "published" and line.fields.surface == surface.name then
-			out[#out + 1] = line
+local function cid_of(entity)
+	return storage.ctron_pluginv2.by_unit[entity.unit_number]
+end
+
+local function place(station)
+	return { sid = cid_of(station), inst = 4242, x = station.position.x, y = station.position.y }
+end
+
+--- The fixture's reactor has no fuel, so the roboports are filled by hand (SP-9).
+local function charge(v)
+	if v.valid then
+		for _, eq in pairs(v.grid.equipment) do
+			if eq.type == "roboport-equipment" then
+				eq.energy = eq.max_energy
+			end
 		end
 	end
-	return out
 end
 
-t.case("cargo: a request no other station here can supply is published, one another station can supply is served " ..
-	"here", function(ctx)
-	local alone, shared, st1, st2
+local function dist(a, b)
+	return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+end
+
+-- G11 (P2 Task 8): a cargo run on one tile, loaded at network 1, delivered into network 2.
+
+local function setup(c, name)
+	c.surface = fx.surface(name)
+	fx.ground(c.surface, -40, -40, 200, 40)
+	c.from, c.from_chest = fx.station(c.surface, 0, 0, { ["iron-plate"] = 300 })
+	c.to, c.to_chest = fx.station(c.surface, 150, 0, {})
+	c.v = fx.ctron(c.surface, -6, 0, { robots = 10 })
+	c.cid = cid_of(c.v)
+end
+
+local function start(c, jid)
+	charge(c.v)
+	ct.registry.set_state(c.cid, "idle")
+	c.jid = jid
+	c.seen = {}
+	fx.send("ct.job.assign", { jid = jid, kind = "cargo", surface = c.surface.name, station = place(c.from),
+		members = { c.cid }, work = {},
+		cargo = { dest = place(c.to), items = { { "iron-plate", "normal", 100 } } } })
+end
+
+local function iron(station)
+	return station.logistic_network.get_item_count({ name = "iron-plate", quality = "normal" })
+end
+
+--- Record the run's states as they pass.
+local function watch(c)
+	charge(c.v)
+	local run = ct.runs.get(c.cid)
+	if run then
+		c.seen[run.state] = true
+	end
+	return run
+end
+
+--- The run is over: no iron aboard, no requests left, no failed event.
+local function expect_clean(ctx, c, jid)
+	ctx.expect(c.v.get_inventory(defines.inventory.spider_trunk).get_item_count("iron-plate") == 0, "no iron aboard")
+	local point = c.v.get_logistic_point(defines.logistic_member_index.spidertron_requester)
+	ctx.expect(#(point.filters or {}) == 0, "the requests are cleared: " .. serpent.line(point.filters))
+	ctx.expect(#events_of(jid, "failed") == 0, "no failed event")
+	ctx.expect(ct.registry.ctron(c.cid).state == "idle", "idle: " .. ct.registry.ctron(c.cid).state)
+end
+
+t.case("G11 cargo loads at the supplier, delivers at the destination and ends there", function(ctx)
+	local c = {}
 	ctx.at(10, function()
-		alone, shared = fx.surface("ctron-cargo1"), fx.surface("ctron-cargo2")
-		for _, surface in ipairs({ alone, shared }) do
-			loop.ground(-20, -20, 300, 120, surface.name)
-		end
-		st1 = fx.station(alone, 10, 10, {})
-		fx.ctron(alone, 10, 22)
-		st2 = fx.station(shared, 10, 10, {})
-		fx.station(shared, 200, 10, { ["iron-plate"] = 50 })
-		fx.ctron(shared, 10, 22)
+		setup(c, "ctv2-g11-cargo")
 	end)
-	ctx.at(12, function()
-		request(st1, 0)
-		request(st2, 0)
+	ctx.at(14, function()
+		ctx.expect(c.from.logistic_network and c.to.logistic_network, "both stations have a network")
+		ctx.expect(c.from.logistic_network ~= c.to.logistic_network, "the networks are separate")
+		start(c, "g11-cargo")
 	end)
-	fx.wait(ctx, 13, 1300, "both prospected", function()
-		return #published(alone) == 1 and #cargo_jobs(shared) == 1
-	end, function()
-		local lines = published(alone)
-		ctx.expect(lines[1].fields.cargo == true, "the published line says cargo")
-		ctx.expect(#cargo_jobs(alone) == 0, "no cargo job kept where it was published")
-		ctx.expect(storage.station_requests[st1.unit_number][1].in_transit_count > 0, "the slot is in transit")
-		ctx.expect(#published(shared) == 0, "the supplied request is not published")
+	fx.wait(ctx, 16, 12000, "the done event", function()
+		watch(c)
+		return #events_of("g11-cargo", "done") > 0
+	end, function(k)
+		ctx.expect(c.seen.to_dest and c.seen.deliver, "passed to_dest and deliver: " .. serpent.line(c.seen))
+		ctx.expect(iron(c.from) <= 200, "the supplier network gave it up: " .. iron(c.from))
+		local d = dist(c.v.position, c.to.position)
+		ctx.expect(d <= 15, "the ctron stands at the destination: " .. d)
+		expect_clean(ctx, c, "g11-cargo")
+		-- The last plates may still be on robots in flight when done fires.
+		fx.wait(ctx, k + 2, 600, "the destination network holds the iron", function()
+			return iron(c.to) >= 100
+		end)
 	end)
 end)
 
---- A cargo job as the pool hands it to B: 20 iron plates for the station at (32, 3100), claimed without a worker.
-local function claim(key, surface)
-	ctron_plugin_on_job_claimed(helpers.table_to_json({
-		key = key, job_type = "cargo", state = "setup", surface_name = surface.name,
-		required_items = { ["iron-plate"] = { normal = 20 } },
-		task_positions = { { x = 32, y = 3100 } },
-		destination_station = { position = { x = 32, y = 3100 }, valid = true },
-		station = {}, trash_items = {}, chunks = {},
-	}))
-end
-
---- A in region A (y > 3000) with a request of 20 in transit, B in region B with 50 plates and a constructron.
-local function trip_fixture(ctx, name, state)
+t.case("G11 a cancelled cargo run returns its load to the supplier", function(ctx)
+	local c = {}
 	ctx.at(10, function()
-		state.surface = fx.surface(name)
-		state.edge = { fx.pair(state.surface, name, 0) }
-		state.a = fx.station(state.surface, 32, 3100, {})
-		state.b = fx.station(state.surface, 32, 1950, { ["iron-plate"] = 50 })
-		state.v = fx.ctron(state.surface, 32, 1940)
+		setup(c, "ctv2-g11-cancel")
 	end)
-	ctx.at(12, function()
-		request(state.a, 20)
-		claim(state.key, state.surface)
+	ctx.at(14, function()
+		start(c, "g11-cancel")
 	end)
-end
-
-local function home(state)
-	local near = state.surface.find_entities_filtered({ name = "constructron", position = { 32, 1950 }, radius = 16 })
-	return #near == 1 and not storage.constructron_statuses[near[1].unit_number].busy
-end
-
-
-t.case("G11: a supplier's constructron loads at its station, crosses, delivers into the requester's network and " ..
-	"comes home", function(ctx)
-	local state = { key = "4243|9" }
-	trip_fixture(ctx, "ctron-g11", state)
-	fx.wait(ctx, 13, 15000, "the cargo delivered and the constructron home", function()
-		return plates(state.surface, 37, 3100) == 20 and fx.by_key(state.key) == nil and home(state)
-	end, function()
-		ctx.expect(storage.station_requests[state.a.unit_number][1].in_transit_count == 0, "the slot is no longer in transit")
-		ctx.expect(#published(state.surface) == 0, "A asked for no second delivery while the first unloaded")
-		ctx.expect(fx.phases(state.key, "ctron.cross") == "captured,arrived,handed_off,captured,arrived,handed_off",
-			"out and back: " .. fx.phases(state.key, "ctron.cross"))
+	-- Cancel only with the load aboard and the ctron well on its way.
+	fx.wait(ctx, 16, 6000, "the load aboard, 50 tiles out", function()
+		local run = watch(c)
+		return run and run.state == "to_dest" and iron(c.from) <= 200 and dist(c.v.position, c.from.position) >= 50
+	end, function(k)
+		fx.send("ct.job.cancel", { jid = c.jid })
+		fx.wait(ctx, k + 2, 8000, "the done event", function()
+			watch(c)
+			return #events_of("g11-cancel", "done") > 0
+		end, function(k2)
+			local d = dist(c.v.position, c.from.position)
+			ctx.expect(d <= 15, "the ctron is back at the supplier: " .. d)
+			-- The last plates may still be on robots in flight when done fires.
+			fx.wait(ctx, k2 + 2, 600, "the supplier has its iron back", function()
+				return iron(c.from) == 300
+			end, function()
+				ctx.expect(iron(c.to) == 0, "nothing reached the destination: " .. iron(c.to))
+				expect_clean(ctx, c, "g11-cancel")
+			end)
+		end)
 	end)
-end)
-
-t.case("G12: the destination station removed mid-trip sends the cargo home", function(ctx)
-	local state = { key = "4243|10" }
-	local destroyed
-	trip_fixture(ctx, "ctron-g12", state)
-	fx.wait(ctx, 13, 15000, "the cargo back in B's network and the job done", function()
-		local job = fx.by_key(state.key)
-		if not destroyed and job and job.in_transit then
-			destroyed = true
-			state.a.destroy({ raise_destroy = true })
-		end
-		return destroyed and job == nil and plates(state.surface, 37, 1950) == 50 and home(state)
-	end, function()
-		local captured = fx.lines_of(state.key, "ctron.cross", "captured")
-		ctx.expect(#captured == 2, "two crossings: " .. fx.phases(state.key, "ctron.cross"))
-		ctx.expect(captured[1].fields.edge == state.edge[2] and captured[2].fields.edge == state.edge[1],
-			"the second crossing goes B-ward")
-	end)
-end)
-
-t.case("cargo: a station on a tile with no constructron still publishes its request", function(ctx)
-	local alone, st
-	ctx.at(10, function()
-		alone = fx.surface("ctron-cargo-noctron")
-		loop.ground(-20, -20, 300, 120, alone.name)
-		st = fx.station(alone, 10, 10, {})
-	end)
-	ctx.at(12, function()
-		request(st, 0)
-	end)
-	fx.wait(ctx, 13, 1300, "published", function()
-		return #published(alone) == 1
-	end, function() end)
 end)

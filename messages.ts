@@ -1,397 +1,398 @@
 import { plainJson } from "@clusterio/lib";
-import { Type, Static } from "@sinclair/typebox";
+import { Type, type Static } from "@sinclair/typebox";
+import {
+	Delta, Detail, DetailFull, JobAssign, JobCancel, JobDrop, JobEvent, JobSquad, JobStation, Portals, Route,
+	RouteAsk, SettingsSet,
+	SettingsState, Snapshot, StationSet, StockQ, StockResult, UiCancel, UiCargo, UiDetailAsk, UiDrop, UiList, UiWatch,
+	WorkClear,
+} from "./contracts.js";
 
-// A stored Constructron job on the controller: id is its key, "<instance id>|<job index>" (spec §8).
-const ConstructronJobValue = Type.Object({
-	id: Type.String(),
-	updatedAtMs: Type.Number(),
-	isDeleted: Type.Boolean(),
+// ctron_pluginv2's Clusterio messages (spec §9.3): each carries one contract payload as `payload`. No permission:
+// none is control traffic (R-9). The controller sends to {instanceId} in a loop over running instances (06 §3.2).
 
-	lastInstanceId: Type.Number(),
-	surfaceName: Type.String(),
-	jobType: Type.String(),
-	job: Type.Unknown(),
-});
+const StockQueryBody = Type.Object({ q: Type.Array(StockQ) });
+const DetailFetchBody = Type.Object({ jid: Type.String() });
+const DetailFullAnswer = Type.Object({ detail: Type.Union([DetailFull, Type.Null()]) });
+const DetailAnswer = Type.Object({ detail: Type.Union([Detail, Type.Null()]) });
 
-export type ConstructronJobValue = Static<typeof ConstructronJobValue>;
-
-/**
- * Event from instance -> controller to add a Constructron job.
- * The `job` originates from Factorio as a LuaTable and is treated as opaque JSON.
- */
-export class ConstructronJobAdd {
-	declare ["constructor"]: typeof ConstructronJobAdd;
+/** Instance → controller: a tile's whole state, in answer to ct.snapshot.request (§6.1). */
+export class TileSnapshotEvent {
+	declare ["constructor"]: typeof TileSnapshotEvent;
 	static type = "event" as const;
 	static src = "instance" as const;
 	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
+	static plugin = "ctron_pluginv2" as const;
 
-	constructor(
-		public instanceId: number,
-		public surfaceName: string,
-		public jobType: string,
-		public job: unknown,
-		public jobKey: string,
-	) { }
+	constructor(public payload: Static<typeof Snapshot>) { }
 
-	static jsonSchema = Type.Object({
-		instanceId: Type.Number(),
-		surfaceName: Type.String(),
-		jobType: Type.String(),
-		job: Type.Unknown(),
-		jobKey: Type.String(),
-	});
+	static jsonSchema = Type.Object({ payload: Snapshot });
 
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId, json.surfaceName, json.jobType, json.job, json.jobKey);
+	static fromJSON(json: Static<typeof TileSnapshotEvent.jsonSchema>) {
+		return new this(json.payload);
 	}
 }
 
-/**
- * Subscribable event from controller -> control to update job list.
- */
-export class ConstructronJobUpdate {
-	declare ["constructor"]: typeof ConstructronJobUpdate;
+/** Instance → controller: a tile's changed records, at most every 60 ticks (R-19). */
+export class TileDeltaEvent {
+	declare ["constructor"]: typeof TileDeltaEvent;
 	static type = "event" as const;
-	static src = "controller" as const;
-	static dst = "control" as const;
-	static plugin = "ctron_plugin" as const;
-	static permission = "ctron_plugin.jobs.read" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
 
-	constructor(public updates: ConstructronJobValue[]) { }
+	constructor(public payload: Static<typeof Delta>) { }
 
-	static jsonSchema = Type.Object({
-		updates: Type.Array(ConstructronJobValue),
-	});
+	static jsonSchema = Type.Object({ payload: Delta });
 
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.updates);
+	static fromJSON(json: Static<typeof TileDeltaEvent.jsonSchema>) {
+		return new this(json.payload);
 	}
 }
 
-/**
- * Request from instance -> controller to atomically claim one pending job on one of `surfaces` (spec §8: the
- * claimer's subscriber surfaces with an idle constructron). Returns the claimed job or null if none are available.
- */
-export class ConstructronJobClaim {
-	declare ["constructor"]: typeof ConstructronJobClaim;
+/** Instance → controller: a run's event: adopted, done, short, ... (§9.2). */
+export class JobEventEvent {
+	declare ["constructor"]: typeof JobEventEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof JobEvent>) { }
+
+	static jsonSchema = Type.Object({ payload: JobEvent });
+
+	static fromJSON(json: Static<typeof JobEventEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: a tile's portal graph on one surface (§7.4). */
+export class PortalReportEvent {
+	declare ["constructor"]: typeof PortalReportEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof Portals>) { }
+
+	static jsonSchema = Type.Object({ payload: Portals });
+
+	static fromJSON(json: Static<typeof PortalReportEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: a watch's first viewer opened, or its last closed (§6.12). */
+export class UiWatchEvent {
+	declare ["constructor"]: typeof UiWatchEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof UiWatch>) { }
+
+	static jsonSchema = Type.Object({ payload: UiWatch });
+
+	static fromJSON(json: Static<typeof UiWatchEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: a cancel from a screen (§6.9). */
+export class UiCancelEvent {
+	declare ["constructor"]: typeof UiCancelEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof UiCancel>) { }
+
+	static jsonSchema = Type.Object({ payload: UiCancel });
+
+	static fromJSON(json: Static<typeof UiCancelEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: drop one requested item from loading jobs (§6.9). */
+export class UiDropEvent {
+	declare ["constructor"]: typeof UiDropEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof UiDrop>) { }
+
+	static jsonSchema = Type.Object({ payload: UiDrop });
+
+	static fromJSON(json: Static<typeof UiDropEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: edit a station's requests and/or name, wherever its tile is (§8.4). */
+export class UiCargoEvent {
+	declare ["constructor"]: typeof UiCargoEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof UiCargo>) { }
+
+	static jsonSchema = Type.Object({ payload: UiCargo });
+
+	static fromJSON(json: Static<typeof UiCargoEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: an in-game settings edit (§6.11). */
+export class SettingsSetEvent {
+	declare ["constructor"]: typeof SettingsSetEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof SettingsSet>) { }
+
+	static jsonSchema = Type.Object({ payload: SettingsSet });
+
+	static fromJSON(json: Static<typeof SettingsSetEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: a route for a leg to another instance; null when there is none (§7.5). */
+export class RouteRequest {
+	declare ["constructor"]: typeof RouteRequest;
 	static type = "request" as const;
 	static src = "instance" as const;
 	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
+	static plugin = "ctron_pluginv2" as const;
 
-	/** `jobKey` names the entry to take (a supplier fetching a cargo offer); null takes the oldest (research §3). */
-	constructor(public instanceId: number, public surfaces: string[], public jobKey: string | null) { }
+	constructor(public payload: Static<typeof RouteAsk>) { }
 
-	static jsonSchema = Type.Object({
-		instanceId: Type.Number(),
-		surfaces: Type.Array(Type.String()),
-		jobKey: Type.Union([Type.String(), Type.Null()]),
-	});
+	static jsonSchema = Type.Object({ payload: RouteAsk });
 
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId, json.surfaces, json.jobKey);
+	static fromJSON(json: Static<typeof RouteRequest.jsonSchema>) {
+		return new this(json.payload);
 	}
 
-	static Response = plainJson(Type.Union([
-		Type.Object({
-			jobKey: Type.String(),
-			jobType: Type.String(),
-			job: Type.Unknown(),
-		}),
-		Type.Null(),
-	]));
+	static Response = plainJson(Type.Object({ route: Type.Union([Route, Type.Null()]) }));
 }
 
-/** Request from instance -> controller: the cargo requests other instances published on `surfaces` (research §3). */
-export class ConstructronCargoOffers {
-	declare ["constructor"]: typeof ConstructronCargoOffers;
+/** Instance → controller: a remote job's detail for Job Details (§6.12). */
+export class JobDetailRequest {
+	declare ["constructor"]: typeof JobDetailRequest;
 	static type = "request" as const;
 	static src = "instance" as const;
 	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
+	static plugin = "ctron_pluginv2" as const;
 
-	constructor(public instanceId: number, public surfaces: string[]) { }
+	constructor(public payload: Static<typeof UiDetailAsk>) { }
 
-	static jsonSchema = Type.Object({
-		instanceId: Type.Number(),
-		surfaces: Type.Array(Type.String()),
-	});
+	static jsonSchema = Type.Object({ payload: UiDetailAsk });
 
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId, json.surfaces);
+	static fromJSON(json: Static<typeof JobDetailRequest.jsonSchema>) {
+		return new this(json.payload);
 	}
 
-	static Response = plainJson(Type.Object({
-		offers: Type.Array(Type.Object({
-			key: Type.String(),
-			surfaceName: Type.String(),
-			position: Type.Object({ x: Type.Number(), y: Type.Number() }),
-			items: Type.Unknown(),
-		})),
-	}));
+	static Response = plainJson(DetailFullAnswer);
 }
 
-/**
- * Per-instance service station status tracked on the controller.
- * Uses the same "subscribable value" shape as other Clusterio web subscriptions.
- */
-const InstanceServiceStationStatus = Type.Object({
-	id: Type.String(),
-	updatedAtMs: Type.Number(),
-	isDeleted: Type.Boolean(),
-
-	instanceId: Type.Number(),
-	/** Service stations by surface name, the surfaces with none left out: the instance subscribes on these (§8). */
-	stations: Type.Record(Type.String(), Type.Number()),
-});
-
-export type InstanceServiceStationStatus = Static<typeof InstanceServiceStationStatus>;
-
-/**
- * Event from instance -> controller whenever a service station is built or removed: its stations by surface.
- */
-export class InstanceServiceStationStatusUpdate {
-	declare ["constructor"]: typeof InstanceServiceStationStatusUpdate;
-	static type = "event" as const;
-	static src = "instance" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(public instanceId: number, public stations: Record<string, number>) { }
-
-	static jsonSchema = Type.Object({
-		instanceId: Type.Number(),
-		stations: Type.Record(Type.String(), Type.Number()),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId, json.stations);
-	}
-}
-
-/**
- * Subscribable event from controller -> control to update service station status.
- */
-export class InstanceServiceStationStatusStream {
-	declare ["constructor"]: typeof InstanceServiceStationStatusStream;
-	static type = "event" as const;
-	static src = "controller" as const;
-	static dst = "control" as const;
-	static plugin = "ctron_plugin" as const;
-	static permission = "ctron_plugin.jobs.read" as const;
-
-	constructor(public updates: InstanceServiceStationStatus[]) { }
-
-	static jsonSchema = Type.Object({
-		updates: Type.Array(InstanceServiceStationStatus),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.updates);
-	}
-}
-
-/**
- * Event from controller -> instance: the surface names some instance has service stations on. A publisher surface
- * sends its jobs to the controller only if its name is in the list (spec §8).
- */
-export class CtronSubscribedSurfaces {
-	declare ["constructor"]: typeof CtronSubscribedSurfaces;
-	static type = "event" as const;
-	static src = "controller" as const;
-	static dst = "instance" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(public surfaces: string[]) { }
-
-	static jsonSchema = Type.Object({
-		surfaces: Type.Array(Type.String()),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.surfaces);
-	}
-}
-
-/**
- * Hardcoded default values for global constructron settings.
- * Update here (and in Lua) when adding/removing settings.
- */
-export const DEFAULT_GLOBAL_SETTINGS = {
-	job_start_delay: 300, // ticks (5 seconds)
-	debug_toggle: false,
-};
-
-/**
- * Hardcoded default values for per-surface constructron settings.
- * Update here (and in Lua) when adding/removing settings.
- */
-export const DEFAULT_SURFACE_SETTINGS = {
-	horde_mode: false,
-	construction_job_toggle: true,
-	rebuild_job_toggle: true,
-	deconstruction_job_toggle: true,
-	upgrade_job_toggle: true,
-	repair_job_toggle: true,
-	destroy_job_toggle: false,
-	zone_restriction_job_toggle: false,
-	desired_robot_count: 50,
-	desired_robot_name: { name: "construction-robot", quality: "normal" },
-	repair_tool_name: { name: "repair-pack", quality: "normal" },
-	ammo_name: { name: "rocket", quality: "normal" },
-	ammo_count: 0,
-	atomic_ammo_name: { name: "atomic-bomb", quality: "normal" },
-	atomic_ammo_count: 0,
-	destroy_min_cluster_size: 8,
-	minion_count: 1,
-};
-
-/**
- * Event from instance -> controller on startup to register which surfaces exist.
- * The controller creates entries for new surfaces using hardcoded defaults.
- */
-export class CtronSurfaceRegister {
-	declare ["constructor"]: typeof CtronSurfaceRegister;
-	static type = "event" as const;
-	static src = "instance" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(public surfaces: string[]) { }
-
-	static jsonSchema = Type.Object({
-		surfaces: Type.Array(Type.String()),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.surfaces);
-	}
-}
-
-/**
- * Event from instance -> controller when a player changes constructron settings in-game.
- */
-export class CtronSettingsUpdate {
-	declare ["constructor"]: typeof CtronSettingsUpdate;
-	static type = "event" as const;
-	static src = "instance" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
-
-	constructor(
-		public instanceId: number,
-		public surfaceName: string | null,
-		public settings: Record<string, unknown>,
-	) { }
-
-	static jsonSchema = Type.Object({
-		instanceId: Type.Number(),
-		surfaceName: Type.Union([Type.String(), Type.Null()]),
-		settings: Type.Record(Type.String(), Type.Unknown()),
-	});
-
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.instanceId, json.surfaceName, json.settings as Record<string, unknown>);
-	}
-}
-
-/**
- * Event from controller -> instance broadcasting settings to all instances.
- */
-export class CtronSettingsBroadcast {
-	declare ["constructor"]: typeof CtronSettingsBroadcast;
+/** Controller → instance: a job for the ctron's instance (§6.9). */
+export class JobAssignEvent {
+	declare ["constructor"]: typeof JobAssignEvent;
 	static type = "event" as const;
 	static src = "controller" as const;
 	static dst = "instance" as const;
-	static plugin = "ctron_plugin" as const;
+	static plugin = "ctron_pluginv2" as const;
 
-	constructor(
-		public surfaceSettings: Record<string, Record<string, unknown>>,
-		public globalSettings: Record<string, unknown>,
-		public mode: string,
-	) { }
+	constructor(public payload: Static<typeof JobAssign>) { }
 
-	static jsonSchema = Type.Object({
-		surfaceSettings: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())),
-		globalSettings: Type.Record(Type.String(), Type.Unknown()),
-		mode: Type.String(),
-	});
+	static jsonSchema = Type.Object({ payload: JobAssign });
 
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(
-			json.surfaceSettings as Record<string, Record<string, unknown>>,
-			json.globalSettings as Record<string, unknown>,
-			json.mode,
-		);
+	static fromJSON(json: Static<typeof JobAssignEvent.jsonSchema>) {
+		return new this(json.payload);
 	}
 }
 
-/**
- * Request from instance -> controller to pull current settings on startup.
- */
-export class CtronSettingsPull {
-	declare ["constructor"]: typeof CtronSettingsPull;
-	static type = "request" as const;
-	static src = "instance" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
+/** Controller → instance: a better station for one member (§6.5). */
+export class JobStationEvent {
+	declare ["constructor"]: typeof JobStationEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
 
-	static jsonSchema = Type.Object({});
+	constructor(public payload: Static<typeof JobStation>) { }
 
-	static fromJSON(_json: Static<typeof this.jsonSchema>) { return new this(); }
+	static jsonSchema = Type.Object({ payload: JobStation });
 
-	static Response = plainJson(Type.Object({
-		surfaceSettings: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())),
-		globalSettings: Type.Record(Type.String(), Type.Unknown()),
-		mode: Type.String(),
-		subscribed: Type.Array(Type.String()),
-	}));
+	static fromJSON(json: Static<typeof JobStationEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
 }
 
-/**
- * Request from control -> controller to set settings via web UI (controller authority mode).
- */
-export class CtronSettingsSet {
-	declare ["constructor"]: typeof CtronSettingsSet;
+/** Controller → instance: cancel a job on every tile holding part of it (§6.9). */
+export class JobCancelEvent {
+	declare ["constructor"]: typeof JobCancelEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof JobCancel>) { }
+
+	static jsonSchema = Type.Object({ payload: JobCancel });
+
+	static fromJSON(json: Static<typeof JobCancelEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Controller → instance: the squad's leader place, gone minions and release (squads.md §4.4). */
+export class JobSquadEvent {
+	declare ["constructor"]: typeof JobSquadEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof JobSquad>) { }
+
+	static jsonSchema = Type.Object({ payload: JobSquad });
+
+	static fromJSON(json: Static<typeof JobSquadEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Controller → instance: drop one requested item (§6.9). */
+export class JobDropEvent {
+	declare ["constructor"]: typeof JobDropEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof JobDrop>) { }
+
+	static jsonSchema = Type.Object({ payload: JobDrop });
+
+	static fromJSON(json: Static<typeof JobDropEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Controller → instance: apply a station edit on the station's tile (§8.4). */
+export class StationSetEvent {
+	declare ["constructor"]: typeof StationSetEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof StationSet>) { }
+
+	static jsonSchema = Type.Object({ payload: StationSet });
+
+	static fromJSON(json: Static<typeof StationSetEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Controller → instance: forget cells (§6.9, §6.11). */
+export class WorkClearEvent {
+	declare ["constructor"]: typeof WorkClearEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof WorkClear>) { }
+
+	static jsonSchema = Type.Object({ payload: WorkClear });
+
+	static fromJSON(json: Static<typeof WorkClearEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Controller → instance: one part of a watch's UI rows (§6.12). */
+export class UiListEvent {
+	declare ["constructor"]: typeof UiListEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof UiList>) { }
+
+	static jsonSchema = Type.Object({ payload: UiList });
+
+	static fromJSON(json: Static<typeof UiListEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Controller → instance: the controller's overrides and the schedulable surfaces (§6.11). */
+export class SettingsStateEvent {
+	declare ["constructor"]: typeof SettingsStateEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof SettingsState>) { }
+
+	static jsonSchema = Type.Object({ payload: SettingsState });
+
+	static fromJSON(json: Static<typeof SettingsStateEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Controller → instance: this tile's stations grouped by covering network, answered in parts (R-151) (§6.5). */
+export class StockQueryRequest {
+	declare ["constructor"]: typeof StockQueryRequest;
 	static type = "request" as const;
-	static src = "control" as const;
-	static dst = "controller" as const;
-	static plugin = "ctron_plugin" as const;
-	static permission = "ctron_plugin.settings.write" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
 
-	constructor(public surfaceName: string | null, public settings: Record<string, unknown>) { }
+	constructor(public payload: Static<typeof StockQueryBody>) { }
 
-	static jsonSchema = Type.Object({
-		surfaceName: Type.Union([Type.String(), Type.Null()]),
-		settings: Type.Record(Type.String(), Type.Unknown()),
-	});
+	static jsonSchema = Type.Object({ payload: StockQueryBody });
 
-	static fromJSON(json: Static<typeof this.jsonSchema>) {
-		return new this(json.surfaceName, json.settings as Record<string, unknown>);
+	static fromJSON(json: Static<typeof StockQueryRequest.jsonSchema>) {
+		return new this(json.payload);
 	}
 
-	static Response = plainJson(Type.Object({}));
+	static Response = plainJson(Type.Object({ r: StockResult }));
 }
 
-/**
- * Request from control -> controller to get current settings.
- */
-export class CtronSettingsGet {
-	declare ["constructor"]: typeof CtronSettingsGet;
+/** Controller → instance: a job's detail from the tile holding it (§6.12). */
+export class JobDetailFetchRequest {
+	declare ["constructor"]: typeof JobDetailFetchRequest;
 	static type = "request" as const;
-	static src = "control" as const;
-	static dst = "controller" as const;
-	static permission = "ctron_plugin.settings.write" as const;
-	static plugin = "ctron_plugin" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
 
-	static jsonSchema = Type.Object({});
+	constructor(public payload: Static<typeof DetailFetchBody>) { }
 
-	static fromJSON(_json: Static<typeof this.jsonSchema>) { return new this(); }
+	static jsonSchema = Type.Object({ payload: DetailFetchBody });
 
-	static Response = plainJson(Type.Object({
-		surfaceSettings: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())),
-		globalSettings: Type.Record(Type.String(), Type.Unknown()),
-		mode: Type.String(),
-	}));
+	static fromJSON(json: Static<typeof JobDetailFetchRequest.jsonSchema>) {
+		return new this(json.payload);
+	}
+
+	static Response = plainJson(DetailAnswer);
 }

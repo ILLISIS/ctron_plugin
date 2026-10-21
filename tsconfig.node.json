@@ -11,6 +11,6 @@
 	"references": [
 		{ "path": "../universal_edges/tsconfig.node.json" }
 	],
-	"include": ["./*.ts", "./test/unit/**/*.ts"],
+	"include": ["./*.ts", "./cluster/**/*.ts", "./test/unit/**/*.ts"],
 	"exclude": ["./dist/*"]
 }

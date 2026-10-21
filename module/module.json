@@ -1,5 +1,5 @@
 {
-	"name": "ctron_plugin",
+	"name": "ctron_pluginv2",
 	"version": "0.0.1",
 	"dependencies": { "clusterio": "*", "universal_edges": "*" },
 	"load": ["control.lua"],

@@ -1,183 +1,167 @@
-import { BaseInstancePlugin } from "@clusterio/host";
-import { lifecycle } from "universal_edges/runtime";
-import * as messages from "./messages.js";
-import { stationsFromIpc } from "./pool.js";
+import type { InstancePluginContext } from "@clusterio/host";
+import { newId, on, openBridge, rateLimited } from "universal_edges/runtime";
+import type { Static } from "@sinclair/typebox";
+import { DOWN, UP, list } from "./contracts.js";
+import {
+	JobAssignEvent, JobCancelEvent, JobDetailFetchRequest, JobDetailRequest, JobDropEvent, JobEventEvent,
+	JobSquadEvent, JobStationEvent, PortalReportEvent, RouteRequest, SettingsSetEvent, SettingsStateEvent,
+	StationSetEvent, StockQueryRequest, TileDeltaEvent, TileSnapshotEvent, UiCancelEvent, UiCargoEvent, UiDropEvent,
+	UiListEvent, UiWatchEvent, WorkClearEvent,
+} from "./messages.js";
 
-type ConstructronJobAddIPC = { job_key: string; job_type: string; surface_name: string; job: unknown };
+/** How long a request sent to Lua waits for its reply (R-14). */
+export const REPLY_MS = 10_000;
 
-/** A module log line (spec §11): op, phase and level, and the line's own fields. */
-type TraceIPC = { op: string; phase: string; level: "info" | "verbose" | "warn" | "error" } & Record<string, unknown>;
-
-type CtronSettingsChangedIPC = {
-	surface_name: string | null;
-	settings: Record<string, unknown>;
-};
-
-export class InstancePlugin extends BaseInstancePlugin {
-	/**
-	 * The save module runs only with Constructron-Continued loaded (module/control.lua's gate); without it, its RCON
-	 * functions don't exist, so this plugin stays quiet (a gridworld tile with the plugin on and no CC mod pack).
-	 */
-	private active = false;
-
-	async init() {
-		const server = this.instance.server as any;
-		const on = <T>(name: string, handler: (data: T) => Promise<void>) => {
-			server.on(`ipc-ctron_plugin:${name}`, (data: T) => {
-				handler(data).catch(err => this.logger.error(`Error handling ${name}:\n${err.stack}`));
+/** Requests sent to Lua, waiting for the reply that carries their req; each rejects after timeoutMs (R-14). */
+export function pendingReplies(timeoutMs = REPLY_MS) {
+	type Waiter = { resolve: (value: unknown) => void; timer: ReturnType<typeof setTimeout> };
+	const waiting = new Map<string, Waiter>();
+	return {
+		wait(req: string): Promise<unknown> {
+			return new Promise((resolve, reject) => {
+				const timer = setTimeout(() => {
+					waiting.delete(req);
+					reject(new Error(`no reply from the tile for ${req} in ${timeoutMs} ms`));
+				}, timeoutMs);
+				waiting.set(req, { resolve, timer });
 			});
-		};
-		// Factorio -> host IPC events, sent by the module's clusterio_api.send_json(...)
-		on("job_add", (data: ConstructronJobAddIPC) => this.handleJobAdd(data));
-		on("job_claim", (data: { surfaces: string[]; job_key?: string }) => (
-			this.claimJobFromController(data.surfaces, data.job_key ?? null)
-		));
-		on("cargo_offers", (data: { surfaces: string[] }) => this.fetchCargoOffers(data.surfaces));
-		on("stations", (data: { stations: Record<string, number> }) => this.handleStations(data.stations));
-		on("trace", async ({ op, phase, level, ...fields }: TraceIPC) => {
-			lifecycle(this.logger, op, phase, fields, level);
-		});
-		on("settings_changed", (data: CtronSettingsChangedIPC) => this.handleSettingsChangedIPC(data));
-		on("surface_created", (data: { name: string }) => this.handleSurfaceCreated(data.name));
-
-		this.instance.handle(messages.CtronSettingsBroadcast, this.handleSettingsBroadcast.bind(this));
-		this.instance.handle(messages.CtronSubscribedSurfaces, this.handleSubscribedSurfaces.bind(this));
-	}
-
-	// Called by the on_nth_tick_300 Lua handler (via IPC) to claim a job for its subscriber surfaces (spec §8).
-	async claimJobFromController(surfaces: string[], jobKey: string | null = null) {
-		let result: { jobKey: string; jobType: string; job: unknown } | null;
-		try {
-			result = await this.instance.sendTo(
-				"controller", new messages.ConstructronJobClaim(this.instance.id, surfaces, jobKey),
-			) as any;
-		} catch (err: any) {
-			this.logger.error(`ConstructronJobClaim failed: ${err?.stack ?? err}`);
-			return;
-		}
-		if (!result) {
-			return;
-		}
-
-		this.logger.info(`ConstructronJobClaim: got job key=${result.jobKey} type=${result.jobType}, sending to Lua`);
-		const jobJson = JSON.stringify(result.job ?? null);
-		const script = `ctron_plugin_on_job_claimed(${JSON.stringify(jobJson)})`;
-		try {
-			const rconResult = await this.sendRcon(`/sc ${script}`);
-			this.logger.info(`ConstructronJobClaim applied for key=${result.jobKey}: ${JSON.stringify(rconResult)}`);
-		} catch (err: any) {
-			this.logger.error(`Failed to apply claimed job for key=${result.jobKey}: ${err?.stack ?? err}`);
-		}
-	}
-
-	/** The cargo requests other tiles published on these surfaces, handed to the module to pick one (research §3). */
-	async fetchCargoOffers(surfaces: string[]) {
-		const { offers } = await this.instance.sendTo(
-			"controller", new messages.ConstructronCargoOffers(this.instance.id, surfaces),
-		) as { offers: unknown[] };
-		if (offers.length) {
-			await this.sendRcon(`/sc ctron_plugin_on_cargo_offers(${JSON.stringify(JSON.stringify(offers))})`);
-		}
-	}
-
-	async onStart() {
-		this.active = (await this.sendRcon(
-			"/sc rcon.print(script.active_mods[\"Constructron-Continued\"] and \"on\" or \"off\")",
-		)).trim() === "on";
-		if (!this.active) {
-			this.logger.info("ctron_plugin: Constructron-Continued is not loaded here; the plugin stays off");
-			return;
-		}
-
-		// Register surfaces so the controller creates default entries for any it hasn't seen before.
-		try {
-			const raw = await this.sendRcon("/sc ctron_plugin_get_surface_names()");
-			const surfaces = raw && raw.trim() ? raw.trim().split(",") : [];
-			this.logger.info(`ctron_plugin: registering surfaces=${JSON.stringify(surfaces)}`);
-			await this.instance.sendTo("controller", new messages.CtronSurfaceRegister(surfaces));
-		} catch (err: any) {
-			this.logger.warn(`Failed to register surfaces with controller: ${err?.stack ?? err}`);
-		}
-
-		// Tell the controller this instance's stations again after a restart (also when it has none)
-		try {
-			await this.sendRcon("/sc ctron_plugin_send_stations()");
-		} catch (err: any) {
-			this.logger.warn(`Failed to send the stations to the controller: ${err?.stack ?? err}`);
-		}
-
-		// Pull settings from controller and apply
-		try {
-			const pullResult = await this.instance.sendTo("controller", new messages.CtronSettingsPull()) as any;
-			if (pullResult) {
-				const payload = JSON.stringify({
-					surface_settings: pullResult.surfaceSettings ?? {},
-					global_settings: pullResult.globalSettings ?? {},
-					mode: pullResult.mode ?? "in_game",
-				});
-				await this.sendRcon(`/sc ctron_plugin_apply_synced_settings(${JSON.stringify(payload)})`);
-
-				await this.setSubscribedSurfaces(pullResult.subscribed ?? []);
+		},
+		/** Whether a wait for req is open (a part for a closed one is dropped). */
+		has: (req: string) => waiting.has(req),
+		/** Resolve req's wait; false for a req nobody waits for (late, repeated or unknown). */
+		settle(req: string, value: unknown): boolean {
+			const w = waiting.get(req);
+			if (!w) {
+				return false;
 			}
-		} catch (err: any) {
-			this.logger.warn(`Failed to pull settings from controller: ${err?.stack ?? err}`);
-		}
-	}
+			waiting.delete(req);
+			clearTimeout(w.timer);
+			w.resolve(value);
+			return true;
+		},
+	};
+}
 
-	async handleJobAdd(data: ConstructronJobAddIPC) {
-		await this.instance.sendTo("controller", new messages.ConstructronJobAdd(
-			this.instance.id, data.surface_name, data.job_type, data.job, data.job_key,
-		));
-	}
+/** Controller → instance events and the bridge type each goes to Lua as (spec §9.2), payload unchanged. */
+const DOWN_EVENTS: [any, string][] = [
+	[JobAssignEvent, "ct.job.assign"], [JobStationEvent, "ct.job.station"], [JobCancelEvent, "ct.job.cancel"],
+	[JobSquadEvent, "ct.job.squad"],
+	[JobDropEvent, "ct.job.drop"], [WorkClearEvent, "ct.work.clear"], [UiListEvent, "ct.ui.list"],
+	[SettingsStateEvent, "ct.settings"], [StationSetEvent, "ct.station.set"],
+];
 
-	async handleStations(stations: Record<string, number> | []) {
-		await this.instance.sendTo(
-			"controller",
-			new messages.InstanceServiceStationStatusUpdate(this.instance.id, stationsFromIpc(stations)),
-		);
-	}
+/**
+ * ctron_pluginv2's instance plugin (spec §2, §9): a relay between this tile's Lua and the controller. It holds no
+ * durable state (R-114): only the requests waiting for Lua's reply and the surfaces this tile's screens watch.
+ */
+export default async function loadInstancePlugin(context: InstancePluginContext) {
+	const { instance, logger, plugin } = context;
+	const warn = rateLimited(logger);
+	const replies = pendingReplies();
+	const stockParts = new Map<string, unknown[]>();
+	// Open watches by whole-watch key, so two watches on one surface (tile, expand) are both kept (X-11).
+	const watched = new Map<string, Static<typeof UP["ct.ui.watch"]>>();
+	// Every send to the controller is fire-and-forget and catches its failure, SessionLost included (R-143): a lost
+	// session never throws out of a handler. The async wrapper also turns a synchronous throw into a rejection.
+	const send = async (message: any): Promise<any> => instance.sendTo("controller", message);
+	const toController = (event: any) => {
+		send(event).catch((err: Error) => warn("send", "ctronv2 send failed", { error: err.message }));
+	};
 
-	async handleSettingsChangedIPC(data: CtronSettingsChangedIPC) {
-		const surfaceName = data.surface_name ?? null;
-		const settings = data.settings ?? {};
-		await this.instance.sendTo(
-			"controller", new messages.CtronSettingsUpdate(this.instance.id, surfaceName, settings),
-		);
-	}
+	/** Start a controller request and return at once; its answer goes down as `type`, a failure only logs. */
+	const relayAsk = (request: any, type: keyof typeof DOWN, build: (answer: any) => object) => {
+		send(request).then(answer => bridge.send(type, build(answer)))
+			.catch((err: Error) => warn(type, `ctronv2 request for ${type} failed`, { error: err.message }));
+	};
 
-	async handleSurfaceCreated(name: string) {
-		await this.instance.sendTo("controller", new messages.CtronSurfaceRegister([name]));
-	}
+	// Up messages are dispatched one at a time and each handler is awaited (UE runtime/bridge.ts receive), so a handler
+	// that waits on the controller must not be awaited: it would hold every later message (R-137). Snapshot and delta
+	// parts are forwarded one message each; the controller reassembles them (R-125).
+	const bridge = openBridge(context, {
+		"ct.snapshot": on(UP["ct.snapshot"], p => toController(new TileSnapshotEvent(p))),
+		"ct.delta": on(UP["ct.delta"], p => toController(new TileDeltaEvent(p))),
+		"ct.job.event": on(UP["ct.job.event"], p => toController(new JobEventEvent(p))),
+		"ct.portals": on(UP["ct.portals"], p => toController(new PortalReportEvent(p))),
+		"ct.ui.cancel": on(UP["ct.ui.cancel"], p => toController(new UiCancelEvent(p))),
+		"ct.ui.drop": on(UP["ct.ui.drop"], p => toController(new UiDropEvent(p))),
+		"ct.ui.cargo": on(UP["ct.ui.cargo"], p => toController(new UiCargoEvent(p))),
+		"ct.settings.set": on(UP["ct.settings.set"], p => toController(new SettingsSetEvent(p))),
+		"ct.ui.watch": on(UP["ct.ui.watch"], p => {
+			const key = JSON.stringify({ surface: p.surface, tile: p.tile, expand: p.expand });
+			if (p.on) {
+				watched.set(key, p);
+			} else {
+				watched.delete(key);
+			}
+			toController(new UiWatchEvent(p));
+		}),
+		// Replies to the controller's requests; a late or unknown one is dropped.
+		"ct.stock.reply": on(UP["ct.stock.reply"], p => {
+			// A reply comes in parts (R-151): concatenate `r` and resolve at the last part.
+			const { req, part, parts, r } = p as unknown as { req: string; part: number; parts: number; r: object };
+			if (!replies.has(req)) {
+				return;
+			}
+			const got = [...stockParts.get(req) ?? [], ...list<unknown>(r)]; // an empty part is {} (R-18)
+			if (part < parts) {
+				stockParts.set(req, got);
+				return;
+			}
+			stockParts.delete(req);
+			replies.settle(req, { r: got });
+		}),
+		"ct.detail.reply": on(UP["ct.detail.reply"], p => {
+			replies.settle(p.req, { detail: p.detail ?? null });
+		}),
+		// Lua's own requests. On an error nothing goes down: the tile's timeout means "the controller can't be reached"
+		// (§7.5), and a screen asks again.
+		"ct.route.ask": on(UP["ct.route.ask"], p => relayAsk(
+			new RouteRequest(p), "ct.route.reply", ({ route }) => (route ? { req: p.req, route } : { req: p.req }))),
+		"ct.ui.detail.ask": on(UP["ct.ui.detail.ask"], p => relayAsk(
+			new JobDetailRequest(p), "ct.ui.detail",
+			({ detail }) => (detail ? { req: p.req, detail } : { req: p.req }))),
+	});
 
-	async handleSettingsBroadcast(event: messages.CtronSettingsBroadcast) {
-		if (!this.active) {
-			return;
-		}
-		const payload = JSON.stringify({
-			surface_settings: event.surfaceSettings,
-			global_settings: event.globalSettings,
-			mode: event.mode,
+	for (const [Class, type] of DOWN_EVENTS) {
+		instance.handle(Class, async (event: { payload: object }) => {
+			bridge.send(type, event.payload);
 		});
+	}
+	// The controller's requests: each goes to Lua with a fresh req and resolves with Lua's reply, or rejects after
+	// REPLY_MS (R-14). P4 counts a rejected stock query as covering nothing (§6.5).
+	instance.handle(StockQueryRequest, async (request: StockQueryRequest) => {
+		const req = newId();
+		const answer = replies.wait(req);
+		bridge.send("ct.stock.query", { req, q: request.payload.q });
 		try {
-			await this.sendRcon(`/sc ctron_plugin_apply_synced_settings(${JSON.stringify(payload)})`);
-		} catch (err: any) {
-			this.logger.error(`Failed to apply synced settings via RCON: ${err?.stack ?? err}`);
+			return await answer as any;
+		} finally {
+			stockParts.delete(req);
 		}
-	}
+	});
+	instance.handle(JobDetailFetchRequest, async (request: JobDetailFetchRequest) => {
+		const req = newId();
+		const answer = replies.wait(req);
+		bridge.send("ct.detail.fetch", { req, jid: request.payload.jid });
+		return await answer as any;
+	});
 
-	async handleSubscribedSurfaces(event: messages.CtronSubscribedSurfaces) {
-		if (this.active) {
-			await this.setSubscribedSurfaces(event.surfaces);
+	// A start, or a controller that restarted, gets this tile's snapshot (§6.10). After a restart the controller has
+	// no watchers, so the open watches go again (X-11); the screens learn the link state from ct.ui.link.
+	instance.hooks.start.attach(plugin.name, async () => {
+		bridge.send("ct.snapshot.request", {});
+	});
+	instance.hooks.controllerConnectionEvent.attach(plugin.name, async (event: string) => {
+		if (event === "connect") {
+			bridge.send("ct.snapshot.request", {});
+			for (const watch of watched.values()) {
+				toController(new UiWatchEvent(watch));
+			}
 		}
-	}
-
-	/** Tell the module which surface names have a subscriber, so its publisher surfaces send jobs (spec §8). */
-	private async setSubscribedSurfaces(surfaces: string[]) {
-		try {
-			const json = JSON.stringify(JSON.stringify(surfaces));
-			await this.sendRcon(`/sc ctron_plugin_set_subscribed_surfaces(${json})`);
-		} catch (err: any) {
-			this.logger.error(`Failed to set the subscribed surfaces via RCON: ${err?.stack ?? err}`);
+		if (event === "connect" || event === "resume") {
+			bridge.send("ct.ui.link", { up: true });
+		} else if (event === "drop" || event === "close") {
+			bridge.send("ct.ui.link", { up: false });
 		}
-	}
+	});
 }

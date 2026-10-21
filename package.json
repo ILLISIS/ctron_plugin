@@ -1,7 +1,7 @@
 {
-	"name": "ctron_plugin",
+	"name": "ctron_pluginv2",
 	"version": "0.0.1",
-	"description": "Constructrons across Clusterio instances: a controller job pool, and jobs that ride Universal Edges v2",
+	"description": "Constructrons as one cluster-wide world: the controller assigns every job, tiles find and run the work",
 	"license": "SEE LICENSE IN LICENSE",
 	"repository": { "type": "git", "url": "https://github.com/ILLISIS/ctron_plugin" },
 	"private": true,

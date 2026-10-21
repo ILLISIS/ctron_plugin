@@ -12,16 +12,9 @@ stds.factorio = {
 	},
 }
 files["**/module/**/*.lua"] = { std = "lua52+factorio" }
+-- A *_core.lua that touches a Factorio global fails lint: that is what keeps the cores unit-testable (spec §3).
 files["**/module/**/*_core.lua"] = { std = "lua52" }
-files["**/test/game/**/*.lua"] = { std = "lua52+factorio", read_globals = { "ue_rt" } }
--- module/ is a fork of Constructron-Continued's runtime (Constructron v2 spec §9.1), kept as CC writes it so each
--- re-sync is a plain diff: luacheck checks only its syntax. This plugin's own files in it are linted in full.
-files["module/**/*.lua"] = { ignore = { "." } }
-for _, name in ipairs({ "border_core", "border", "crossing", "trace" }) do
-	files["module/script/" .. name .. ".lua"] = { enable = { "." } }
-end
-files["test/no_cc/**/*.lua"] = { std = "lua52+factorio" }
--- G6 and G11 claim a job through the module's RCON entry point (spec §12).
-for _, name in ipairs({ "pool", "cargo" }) do
-	files["test/game/" .. name .. "_game_test.lua"] = { read_globals = { "ctron_plugin_on_job_claimed" } }
-end
+files["module/globals.lua"] = { globals = { "ctronv2_rt" } }
+files["**/test/game/**/*.lua"] = { std = "lua52+factorio", read_globals = { "ue_rt", "ctronv2_rt" } }
+files["test/no_cc/**/*.lua"] = { std = "lua52+factorio", read_globals = { "ctronv2_rt" } }
+files["test/preview/**/*.lua"] = { std = "lua52+factorio" }
