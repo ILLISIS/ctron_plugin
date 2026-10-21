@@ -64,6 +64,7 @@ t.case("registry: a built ctron and station get ids, CC's setup and dirty record
 			ct.registry.set_state(cid, "idle")
 			ctx.expect(ct.registry.ctron(cid).state == "idle", "state " .. serpent.line(ct.registry.ctron(cid).why))
 			ctx.expect(v.enable_logistics_while_moving == false, "logistics while moving off")
+			ctx.expect(v.request_from_buffers == true, "requests from buffer chests")
 			ctx.expect(v.vehicle_automatic_targeting_parameters.auto_target_without_gunner == true, "targeting")
 			ctx.expect(near(v.color.r, 1) and near(v.color.a, 0.25), "idle colour " .. serpent.line(v.color))
 			ctx.expect(ct.registry.station(sid) ~= nil, "station record")

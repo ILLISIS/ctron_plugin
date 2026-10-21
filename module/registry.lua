@@ -170,6 +170,9 @@ function registry.register(entity, cid, busy)
 		cid = cid or (registry.here() .. "." .. unit)
 		local reg = script.register_on_object_destroyed(entity)
 		entity.enable_logistics_while_moving = false
+		-- Off on every spider by default: the stock checks count buffer chests, so without it a request they "cover"
+		-- is never filled (owner: constructrons don't take from buffer chests).
+		entity.request_from_buffers = true
 		entity.vehicle_automatic_targeting_parameters = { auto_target_without_gunner = true,
 			auto_target_with_gunner = true }
 		if fresh then
