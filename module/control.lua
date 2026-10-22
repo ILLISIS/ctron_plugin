@@ -75,6 +75,15 @@ for _, m in ipairs(ORDER) do
 		end or fn
 	end
 end
+-- A patched save raises events before Clusterio's start event makes the storage (on_player_left_game for a player
+-- connected in the save, ILLISIS/ctron_plugin#2): there is nothing for them to do yet.
+for id, fn in pairs(lib.events) do
+	lib.events[id] = function(event)
+		if storage.ctron_pluginv2 then
+			fn(event)
+		end
+	end
+end
 
 local function each(field, ...)
 	for _, m in ipairs(ORDER) do

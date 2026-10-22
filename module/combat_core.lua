@@ -99,6 +99,23 @@ local function retreat_target(c, v)
 	return c.safe[#c.safe] or v.station
 end
 
+-- The trail stays loop-free, so after its first step (to the newest entry) a retreat only walks back toward the station
+-- (ILLISIS/ctron_plugin#8; CC appends in time order, and a fight that went back and forth sent the retreat back into the
+-- swarm: the biters tile's replay died at tick 5079990, and lives with this). Within 16 of the station
+-- or of an entry on this tile, the trail is cut back to the oldest such point; more than 16 from all of them adds one.
+local function record(c, v)
+	local keep = dist_to(v, v.station) <= 16 and 0
+	for i = 1, #c.safe do
+		keep = keep or dist_to(v, c.safe[i]) <= 16 and i
+	end
+	if not keep then
+		c.safe[#c.safe + 1] = { x = math.floor(v.pos.x), y = math.floor(v.pos.y), inst = v.here }
+	end
+	for i = #c.safe, (keep or #c.safe) + 1, -1 do
+		c.safe[i] = nil
+	end
+end
+
 -- run_core turns the place into a local move or a route travel (R-201); no place stays put (CC destroy.lua:124-127).
 local function move(ops, p)
 	ops[#ops + 1] = p and { "move", p } or { "stop" }
@@ -157,9 +174,8 @@ function combat_core.fight(v, c)
 	local threat = combat_core.threat(v.enemies, mod)
 	if threat < 50 then
 		c.holding, c.retreating = nil, nil
-		local last = last_safe(c, v)
-		if threat < 40 and dist_to(v, last) > 16 then
-			c.safe[#c.safe + 1] = { x = math.floor(v.pos.x), y = math.floor(v.pos.y), inst = v.here }
+		if threat < 40 then
+			record(c, v)
 		end
 		local hold, why = combat_core.squad_hold(v.members)
 		if hold then

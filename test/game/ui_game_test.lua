@@ -1,6 +1,7 @@
 local t = require("modules/v2_test/testlib")
 local ct = require("modules/ctron_pluginv2/ct") -- filled by control.lua; read ct.gui inside steps only
 local view = require("modules/ctron_pluginv2/gui/view_core")
+local lib = require("modules/ctron_pluginv2/control")
 
 local function inbox(id, msg_type, payload)
 	ue_rt.inbox("ctron_pluginv2", helpers.table_to_json({ { id = "c7e50001." .. id, type = msg_type, payload = payload } }))
@@ -62,6 +63,15 @@ t.case("ctronv2 ui: a gap re-watches; a list for an unheld watch changes nothing
 		ctx.expect(storage.ctron_pluginv2.ui.watches["nauvis|4242|"].n == 1, "one viewer left, no off yet")
 		ct.gui.watch(1, nil)
 		ctx.expect(storage.ctron_pluginv2.ui.watches["nauvis|4242|"] == nil, "released")
+	end)
+	ctx.at(24, function()
+		-- #2: a patched save raises events (on_player_left_game for a player connected in it) before Clusterio's start
+		-- event makes the storage.
+		local s = storage.ctron_pluginv2
+		storage.ctron_pluginv2 = nil
+		local ok, err = pcall(lib.events[defines.events.on_player_removed], { player_index = 7 })
+		storage.ctron_pluginv2 = s
+		ctx.expect(ok, "an event before the storage exists does nothing: " .. tostring(err))
 	end)
 end)
 

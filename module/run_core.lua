@@ -96,7 +96,7 @@ function run_core.new(msg, i, ctx)
 		role = (minion or i > 1) and "minion" or (msg.kind == "destroy" and "leader" or "worker"),
 		station = msg.station, work = work, work_inst = work[1] and tonumber(work[1].wid:match("^(%d+)|")),
 		tasks = tasks, done_tasks = 0, total_tasks = #tasks, load = load, cargo = msg.cargo, landfill = landfill,
-		radius = ctx.radius, reached = 0, sent = {}, status = "new", since = ctx.tick,
+		radius = ctx.radius, reached = 0, sent = {}, status = "new", since = ctx.tick, ammo = ctx.ammo,
 	}
 	if minion then
 		local l = msg.lead
@@ -248,7 +248,38 @@ end
 HANDLE.to_station = station_leg("loading")
 HANDLE.returning = station_leg("unloading")
 
-ENTER.loading = function(run, f, _, acts)
+--- The ammo line a load built under cfg holds: { name, quality, count }, or false.
+function run_core.ammo_of(cfg)
+	return cfg.ammo_count > 0 and { cfg.ammo[1], cfg.ammo[2], cfg.ammo_count } or false
+end
+
+local function same(a, b)
+	return a == b or a and b and a[1] == b[1] and a[2] == b[2] and a[3] == b[3]
+end
+
+--- The load's ammo line follows the settings (ILLISIS/ctron_plugin#5): the restock test counts the configured ammo, so
+--- a restock that loaded the run's first ammo turned straight back, again and again. run.ammo is the line the load
+--- holds; nil (a run made before it was kept) takes the settings' line as its own.
+local function ammo_line(run, cfg)
+	local had, want = run.ammo, run_core.ammo_of(cfg)
+	run.ammo = want
+	if had == nil or same(had, want) then
+		return
+	end
+	local qs = had and run.load[had[1]]
+	if qs and qs[had[2]] then
+		qs[had[2]] = qs[had[2]] > had[3] and qs[had[2]] - had[3] or nil
+		if next(qs) == nil then
+			run.load[had[1]] = nil
+		end
+	end
+	if want then
+		add_item(run.load, want[1], want[2], want[3])
+	end
+end
+
+ENTER.loading = function(run, f, cfg, acts)
+	ammo_line(run, cfg)
 	run.sent = {}
 	acts[#acts + 1] = { "requests", "load" }
 	run.status, run.arg = "requesting", nil
@@ -294,7 +325,7 @@ ENTER.to_work = function(run, f, cfg, acts)
 	end
 	run.task = i
 	local p = run.tasks[i]
-	local opts = { kind = "work", radius = 3 }
+	local opts = { kind = "work", radius = 3, reach = run.radius }
 	if run.landfill then
 		opts.radius, opts.landfill = 0.8 * run.radius, run.radius -- robots fly over water (R-74)
 		roboports(run, acts, 1)

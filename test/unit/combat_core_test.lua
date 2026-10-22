@@ -130,6 +130,20 @@ t.test("fight: the trail starts 16 tiles out of the station and a retreat steps 
 	t.expect_same(d.ops[1], { "move", { x = 32, y = 0, inst = 1 } }, "the last trail entry, not the station")
 end)
 
+t.test("fight: the trail stays loop-free: back within 16 of an earlier entry, it is cut back to it (#8)", function()
+	local c = state()
+	local function calm(x) cc.fight(leader({ pos = { x = x, y = 100 }, station = { x = -300, y = 100, inst = 1 } }), c) end
+	-- The biters tile's trail: forward, back, forward again near the nests.
+	for _, x in ipairs({ -438, -458, -478, -456, -479, -472 }) do calm(x) end
+	t.expect_same(c.safe, { { x = -438, y = 100, inst = 1 }, { x = -458, y = 100, inst = 1 } })
+	local wave = leader({ pos = { x = -472, y = 100 }, station = { x = -300, y = 100, inst = 1 },
+		enemies = names(40, "big-biter") })
+	t.expect_same(has(cc.fight(wave, c).ops, "move"), { "move", { x = -458, y = 100, inst = 1 } },
+		"the retreat steps toward the station, never back west")
+	calm(-310)
+	t.expect_eq(#c.safe, 0, "back within 16 of the station: no trail left")
+end)
+
 t.test("fight: a crossing leader does nothing", function()
 	local c = state()
 	local d = cc.fight(leader({ crossing = true, enemies = names(40, "big-biter") }), c)

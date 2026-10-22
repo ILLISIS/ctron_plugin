@@ -116,7 +116,7 @@ t.test("loading: fulfilled clears, balances ammo and walks to the nearest task",
 	local run = run_of()
 	local acts = loaded(run)
 	t.expect_same(acts, { { "requests", "clear" }, { "balance_ammo" },
-		{ "travel", { inst = 1, x = 9.5, y = 9.5 }, { kind = "work", radius = 3 } } })
+		{ "travel", { inst = 1, x = 9.5, y = 9.5 }, { kind = "work", radius = 3, reach = 10 } } })
 	t.expect_eq(run.state, "to_work"); t.expect_eq(run.task, 1); t.expect_eq(run.next, nil)
 end)
 
@@ -190,7 +190,8 @@ t.test("repick: after a crossing's arrival, the nearest task from where the ctro
 	local run = run_of()
 	loaded(run)
 	local acts = rc.step(run, facts({ tick = 1200, pos = { x = 31, y = 31 } }), CFG, { type = "repick" })
-	t.expect_eq(run.task, 9); t.expect_same(acts, { { "travel", { inst = 1, x = 30.5, y = 30.5 }, { kind = "work", radius = 3 } } })
+	t.expect_eq(run.task, 9)
+	t.expect_same(acts, { { "travel", { inst = 1, x = 30.5, y = 30.5 }, { kind = "work", radius = 3, reach = 10 } } })
 end)
 
 t.test("at_task: robots out unchanged for 5 checks pops, whatever charging does (review 24)", function()
@@ -393,12 +394,37 @@ t.test("interrupts in order: health, robots, ammo", function()
 	t.expect_true(rc.ammo_low(none, cfg)); t.expect_eq(rc.ammo_low(none, CFG), false)
 end)
 
+t.test("an ammo setting changed mid-run: the restock loads the new ammo, so the run doesn't turn straight back (#5)", function()
+	local rockets = { ammo_count = 100, ammo = { "rocket", "normal" } }
+	local run = rc.new(msg(), 1, { tick = 1000, radius = 10, unit = 10, profile = { rocket = { normal = 100 } },
+		ammo = { "rocket", "normal", 100 } })
+	rc.start(run, facts(), rockets)
+	rc.step(run, facts(), rockets, { type = "arrived" })
+	t.expect_same(run.load, { ["stone-furnace"] = { normal = 4 }, rocket = { normal = 100 } }, "unchanged settings")
+	rc.step(run, facts({ tick = 1120, fulfilled = true }), rockets)
+	rc.step(run, facts({ tick = 1200 }), rockets, { type = "arrived" })
+	local explosive = { ammo_count = 200, ammo = { "explosive-rocket", "normal" } }
+	rc.step(run, facts({ tick = 1260, out = 1 }), explosive) -- none of the new ammo aboard
+	t.expect_eq(run.state, "to_station")
+	rc.step(run, facts({ tick = 1500 }), explosive, { type = "arrived" })
+	t.expect_eq(run.state, "loading")
+	t.expect_same(run.load, { ["stone-furnace"] = { normal = 4 }, ["explosive-rocket"] = { normal = 200 } },
+		"the old ammo's line gives way to the new one")
+	rc.step(run, facts({ tick = 1620, fulfilled = true }), explosive)
+	rc.step(run, facts({ tick = 1700 }), explosive, { type = "arrived" })
+	rc.step(run, facts({ tick = 1760, out = 1 }), { ammo_count = 0 }) -- ammo turned off: no restock
+	t.expect_eq(run.state, "at_task")
+	rc.step(run, facts({ tick = 1820, robots = 0 }), { ammo_count = 0 })
+	rc.step(run, facts({ tick = 2000 }), { ammo_count = 0 }, { type = "arrived" })
+	t.expect_same(run.load, { ["stone-furnace"] = { normal = 4 } }, "and no ammo line")
+end)
+
 t.test("landfill: reduced roboports and logistics while walking, full at the task, out of landfill leaves", function()
 	local run = run_of(msg("construction", { { "landfill", "normal", 30, 100 } }))
 	local acts = loaded(run)
 	t.expect_same(ops(acts), { "requests", "balance_ammo", "roboports", "moving_logistics", "travel" })
 	t.expect_same(op(acts, "roboports"), { "roboports", 1 }); t.expect_same(op(acts, "moving_logistics"), { "moving_logistics", true })
-	t.expect_same(op(acts, "travel")[3], { kind = "work", radius = 8, landfill = 10 })
+	t.expect_same(op(acts, "travel")[3], { kind = "work", radius = 8, landfill = 10, reach = 10 })
 	acts = rc.step(run, facts({ tick = 1200, landfill_aboard = 30 }), CFG, { type = "arrived" })
 	t.expect_same(acts, { { "roboports", "full" } })
 	rc.step(run, facts({ tick = 1230, landfill_aboard = 0, out = 3 }), CFG)
@@ -617,7 +643,7 @@ t.test("fight: the first step at the station records no safe position; a restock
 	t.expect_same(run.combat.safe, {}, "the trail starts 16 tiles out")
 	rc.step(run, facts({ tick = 1240, pos = { x = -3, y = 0 }, combat = lview({ tick = 1240, pos = { x = -3, y = 0 } }) }), CFG)
 	t.expect_same(run.combat.safe, { { x = -3, y = 0, inst = 1 } })
-	local cfg = { ammo_count = 100 }
+	local cfg = { ammo_count = 100, ammo = { "rocket", "normal" } }
 	rc.step(run, facts({ tick = 1300, pos = { x = -3, y = 0 }, ammo_slots = 0, ammo_trunk = 0 }), cfg)
 	t.expect_eq(run.state, "to_station")
 	rc.step(run, facts({ tick = 1400, pos = AT_STATION }), cfg, { type = "arrived" })

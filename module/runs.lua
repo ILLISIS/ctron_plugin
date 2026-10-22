@@ -532,7 +532,7 @@ function runs.adopt(msg)
 		local e = entities[i]
 		local radius = msg.kind == "destroy" and lead_radius or e.logistic_cell.construction_radius
 		local run = run_core.new(msg, i, { tick = game.tick, radius = radius, unit = e.unit_number,
-			profile = items.full(profile, cfg) })
+			profile = items.full(profile, cfg), ammo = run_core.ammo_of(cfg) })
 		S().runs[cid] = run
 		ct.registry.set_state(cid, "busy", nil, msg.jid)
 		ct.registry.paint(e, run.role == "minion" and "minion" or msg.kind)

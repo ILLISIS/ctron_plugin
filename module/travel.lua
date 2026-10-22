@@ -129,6 +129,15 @@ local function start_leg(t, v, x, y, r, purpose)
 			end
 		else
 			p = v.surface.find_non_colliding_position("constructron_pathing_proxy_10", { x, y }, r, 1)
+			-- Work (t.reach = the construction radius): a task point in a lake moves to land its robots still reach it
+			-- from, as they fly over water; none means no_land, never the water goal (ILLISIS/ctron_plugin#6).
+			if not p and t.reach then
+				p = v.surface.find_non_colliding_position("constructron_pathing_proxy_10", { x, y }, t.reach, 2)
+				if not p then
+					fail(t, "no_land")
+					return
+				end
+			end
 		end
 		if p then
 			tx, ty = p.x, p.y
@@ -146,6 +155,10 @@ end
 fail = function(t, reason)
 	t.status, t.reason = "failed", reason
 	S().active[t.unit] = nil
+	local v = entity(t.unit)
+	if v then
+		v.autopilot_destination = nil -- else it keeps walking at the target it failed to reach, often water (#6)
+	end
 	trace(t, reason, "warn")
 	if t.kind == "station" and (reason == "no_path" or reason == "stuck") then
 		ct.portals.dirty(t.surface) -- a failed dock leg (R-135)
@@ -492,7 +505,8 @@ function travel.go(unit, goal, opts)
 	local settling = old ~= nil and old.phase == "settle"
 	travel.cancel(unit)
 	local t = { unit = unit, surface = v.surface.name, goal = { inst = goal.inst, x = goal.x, y = goal.y },
-		kind = opts.kind, radius = opts.radius or 3, landfill = opts.landfill, avoid = {}, captures = 0, reroutes = 0 }
+		kind = opts.kind, radius = opts.radius or 3, landfill = opts.landfill, reach = opts.reach, avoid = {}, captures = 0,
+		reroutes = 0 }
 	S().units[unit] = t
 	if settling then
 		-- the 12 ticks after a crossing (R-78): the pending ctron.leg begins this travel instead of the old one
@@ -542,7 +556,7 @@ function travel.export(v)
 		end
 	end
 	t.phase, t.status = "held", "crossing" -- UE freezes it: neither the watchdog nor a command-completed may act
-	return { goal = t.goal, kind = t.kind, radius = t.radius, landfill = t.landfill,
+	return { goal = t.goal, kind = t.kind, radius = t.radius, landfill = t.landfill, reach = t.reach,
 		route = t.route and { hops = t.route.hops, i = t.route.i }, budget = t.budget, captures = t.captures,
 		reroutes = t.reroutes, avoid = avoid, stepping = t.stepping }
 end
@@ -558,7 +572,7 @@ function travel.import(v, data, edge)
 		avoid[key] = tick + left
 	end
 	local t = { unit = v.unit_number, surface = v.surface.name, goal = data.goal, kind = data.kind,
-		radius = data.radius, landfill = data.landfill, route = data.route, budget = data.budget,
+		radius = data.radius, landfill = data.landfill, reach = data.reach, route = data.route, budget = data.budget,
 		captures = (data.captures or 0) + 1, reroutes = data.reroutes or 0, avoid = avoid,
 		status = "crossing", phase = "settle", arrived_at = tick }
 	S().units[t.unit], S().active[t.unit] = t, true

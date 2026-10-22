@@ -61,10 +61,21 @@ t.case("G14 leg: a leg targets the stand point beside a pond; the goal table is 
 		c.v = fx.ctron(s, 0, 3120, { robots = 0 })
 		c.goal = { inst = registry.here(), x = 60, y = 3040 }
 		travel.go(c.v.unit_number, c.goal, { kind = "work", radius = 12 })
+		-- #6: a work leg with no stand point within its radius stands on land within reach of the goal, or fails
+		-- no_land at once when there is none; never a goal in the water.
+		c.w = fx.ctron(s, 10, 3120, { robots = 0 })
+		travel.go(c.w.unit_number, c.goal, { kind = "work", radius = 3, reach = 20 })
+		c.n = fx.ctron(s, 20, 3120, { robots = 0 })
+		travel.go(c.n.unit_number, c.goal, { kind = "work", radius = 3, reach = 3 })
+		ctx.expect(failed[c.n.unit_number] == "no_land", "no land within reach: " .. tostring(failed[c.n.unit_number]))
+		ctx.expect(#c.n.autopilot_destinations == 0, "and no autopilot")
 	end)
 	fx.wait(ctx, 70, 3000, "arrival", function()
-		return arrived[c.v.unit_number] ~= nil
+		return arrived[c.v.unit_number] ~= nil and arrived[c.w.unit_number] ~= nil
 	end, function()
+		local leg = T().units[c.w.unit_number].leg
+		ctx.expect(math.abs(leg.tx - 60) <= 20 and math.abs(leg.ty - 3040) <= 20, "the stand point is within reach")
+		ctx.expect(dist(c.w.position, 60, 3040) > 4, "stopped beside the pond, not in it")
 		ctx.expect(c.goal.inst == registry.here() and c.goal.x == 60 and c.goal.y == 3040, "goal unchanged")
 		ctx.expect(travel.status(c.v.unit_number) == "arrived", "status arrived")
 		ctx.expect(arrived[c.v.unit_number] == 1, "on_arrived once")
@@ -184,6 +195,7 @@ t.case("G14 stuck: a frozen ctron with a live autopilot is stuck twice, then on_
 	end, function()
 		ctx.expect(failed[c.v.unit_number] == "stuck", "reason stuck, got " .. tostring(failed[c.v.unit_number]))
 		ctx.expect(T().units[c.v.unit_number].leg.stuck == 2, "two stucks")
+		ctx.expect(#c.v.autopilot_destinations == 0, "the failed leg's autopilot is cleared (#6)")
 	end)
 end)
 
