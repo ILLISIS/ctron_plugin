@@ -120,7 +120,7 @@ t.test("loading: fulfilled clears, balances ammo and walks to the nearest task",
 	t.expect_eq(run.state, "to_work"); t.expect_eq(run.task, 1); t.expect_eq(run.next, nil)
 end)
 
-t.test("loading: one short after 900 ticks when the network covers none of the missing items", function()
+t.test("loading: a short after 900 ticks when the network covers none of the missing items, again every 900 (R-212)", function()
 	local run = run_of()
 	rc.start(run, facts(), CFG); rc.step(run, facts(), CFG, { type = "arrived" }) -- loading since 1000
 	local missing = { { "iron-plate", "normal", 5 } }
@@ -130,7 +130,9 @@ t.test("loading: one short after 900 ticks when the network covers none of the m
 	acts = rc.step(run, facts({ tick = 1900, missing = missing, covers_missing = false }), CFG)
 	t.expect_same(acts, { { "emit", "short", { cid = "1.10", missing = missing } } }); t.expect_eq(run.status, "short")
 	acts = rc.step(run, facts({ tick = 2020, missing = missing, covers_missing = false }), CFG)
-	t.expect_same(acts, {}, "once per visit"); t.expect_eq(run.next, 2140)
+	t.expect_same(acts, {}, "not again within 900 ticks"); t.expect_eq(run.next, 2140)
+	acts = rc.step(run, facts({ tick = 2800, missing = missing, covers_missing = false }), CFG)
+	t.expect_same(acts, { { "emit", "short", { cid = "1.10", missing = missing } } }, "again after 900")
 end)
 
 t.test("loading: no short while the network covers something missing; trash_full once", function()

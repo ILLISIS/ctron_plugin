@@ -5,7 +5,7 @@ local combat_core = require("modules/ctron_pluginv2/combat_core")
 
 local run_core = {}
 
-run_core.WAIT = 900 -- short and trash_full: one event per station visit (CC job.lua:1099-1114)
+run_core.WAIT = 900 -- short: every 900 ticks while unmet (R-212); trash_full: once per visit (CC job.lua:1099-1114)
 run_core.AT_TASK_LIMIT = 3600 -- R-146: per task since its last progress, a backstop for robots that never settle
 run_core.LANDFILL = { "landfill", "foundation", "ice-platform" } -- first match (CC job.lua:926-937)
 local POLL = { loading = 120, unloading = 120, deliver = 120, at_task = 60, fight = 60, follow = 60 }
@@ -306,8 +306,9 @@ HANDLE.loading = function(run, f, cfg, acts, ev)
 		run.status, run.arg = run.sent.short and "short" or "awaiting_logistics", f.missing
 	end
 	if waited(run, f) then
-		if not run.sent.short and not f.covers_missing then
-			run.sent.short, run.status = true, "short"
+		-- R-212: asked again every WAIT, as CC re-checks every poll; a station elsewhere may have filled up since
+		if not f.covers_missing and (not run.sent.short or f.tick - run.sent.short >= run_core.WAIT) then
+			run.sent.short, run.status = f.tick, "short"
 			acts[#acts + 1] = { "emit", "short", { cid = run.cid, missing = f.missing } }
 		end
 		if not run.sent.trash and not f.trash_empty and f.trash_stuck then

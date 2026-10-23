@@ -25,7 +25,7 @@ local function rows()
 			{ missing = { { "assembling-machine-2", "normal", 12 }, { "fast-inserter", "normal", 40 } } }),
 		job("j:a2", "attention", 2, "deconstruction", OTHER, "no_path"),
 		{ key = "w:7|nauvis|upgrade|3", sec = "attention", ord = 3, kind = "upgrade", owner = OTHER, ownerName = "gridworld_10_-3",
-			c = { -12345, -67890 }, st = "backoff", why = "unreachable", rem = 30, committed = 0, firstSeenMs = 0, tool = false },
+			c = { -12345, -67890 }, st = "backoff", why = "no_progress", rem = 30, committed = 0, firstSeenMs = 0, tool = false },
 		job("j:" .. JID, "progress", 1, "construction", HERE, "working"),
 		job("j:p2", "progress", 2, "deconstruction", HERE, "moving", { n = 3 }),
 		job("j:p3", "progress", 3, "upgrade", OTHER, "requesting"),

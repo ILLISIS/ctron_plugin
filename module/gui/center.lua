@@ -105,7 +105,7 @@ local function build_row(parent, key, vm, index)
 	local row = card.add({ type = "flow", name = "flow", direction = "horizontal" })
 	row.style.horizontally_stretchable = true
 	row.style.vertical_align = "center"
-	if vm.type == "cell" then
+	if vm.nested then
 		row.style.left_padding = 24
 	end
 	ct.gui.chip(row, vm.chip)
@@ -115,6 +115,8 @@ local function build_row(parent, key, vm, index)
 	status.style.left_padding = 10
 	status.style.width = STATUS_WIDTH
 	status.label.style.horizontally_stretchable = false
+	status.label.style.single_line = false -- a long status wraps instead of running into the tile column
+	status.label.style.maximal_width = STATUS_WIDTH - 10 - 16 - 4 -- the padding, the 16 px icon, the flow's spacing
 	for _, f in ipairs({ "tile", "who", "count", "age" }) do
 		local label = row.add({ type = "label", name = f })
 		label.style.width = LABEL_WIDTH[f]

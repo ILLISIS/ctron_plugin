@@ -539,7 +539,9 @@ local function build(name, m, by, opts, now)
 		local count = 0
 		local cells = {}
 		for _, r in ipairs(sorted(by.cells)) do
-			cells[#cells + 1] = { key = r.key, vm = cell_vm(r, now, opts) }
+			local vm = cell_vm(r, now, opts)
+			vm.nested = true -- under its group, so indented; a cell in Needs attention stands alone
+			cells[#cells + 1] = { key = r.key, vm = vm }
 		end
 		for _, r in ipairs(sorted(by.pending)) do
 			count = count + (r.n or 0)
