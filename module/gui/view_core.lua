@@ -496,15 +496,28 @@ local function ctron_vm(r, opts)
 	}
 end
 
+--- A need row's open order, a count per slot as list.ts sends it (R-166), → [[name, quality, count]]; a 0 is left out.
+local function order_items(need)
+	local items = {}
+	for i, s in ipairs(need.slots or {}) do
+		local n = need.order[i]
+		if n and n > 0 then
+			items[#items + 1] = { s[1], s[2], n }
+		end
+	end
+	return items
+end
+
 local function station_vm(r, need, opts)
 	local here = view.is_local(r, opts.here)
 	-- A pending cargo order shows on its destination's need row, not as a job (R-156): no_supplier as the status,
 	-- the order's items in the tooltip.
 	local st = need and need.why and view.status(need.why)
+	local order = need and need.order and order_items(need)
 	return {
 		type = "station", id = string.sub(r.key, 3), chip = name_chip(r.name), who = "", tile = view.tile(r, opts.here),
 		sprite = st and st.sprite, status = st and st.caption,
-		tip = need and need.order and #need.order > 0 and view.items_text(need.order) or nil,
+		tip = order and #order > 0 and view.items_text(order) or nil,
 		icons = view.request_buttons(need and need.slots), pos = { x = r.x, y = r.y }, locate = here,
 		cargo = here or opts.link_up and true or false, -- a remote edit goes through the controller (R-192)
 		remote_tip = remote_tip(r, opts.here),
