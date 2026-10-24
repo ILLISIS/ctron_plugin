@@ -51,7 +51,7 @@ local function rows()
 		{ key = "n:" .. SID, slots = { { "iron-plate", "normal", 100, 500, 220 }, { "rail", "normal", 50, 200, 0 },
 			{ "copper-plate", "normal", 100, 400 }, { "steel-plate", "normal", 50, 100 }, { "pipe", "normal", 50, 100 },
 			{ "stone-brick", "normal", 50, 100 }, { "concrete", "normal", 50, 100 }, { "small-lamp", "normal", 10, 20 } },
-			why = "no_supplier", order = { { "rail", "normal", 150 } } },
+			why = "no_supplier", order = { 0, 150, 0, 0, 0, 0, 0, 0 } },
 		{ key = "s:7.22", sec = "stations", ord = 2, at = OTHER, atName = "gridworld_10_-3", name = "East depot", x = 290, y = 0 },
 	}
 end
