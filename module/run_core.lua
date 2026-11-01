@@ -8,8 +8,13 @@ local run_core = {}
 run_core.WAIT = 900 -- short: every 900 ticks while unmet (R-212); trash_full: once per visit (CC job.lua:1099-1114)
 run_core.AT_TASK_LIMIT = 3600 -- R-146: per task since its last progress, a backstop for robots that never settle
 run_core.LANDFILL = { "landfill", "foundation", "ice-platform" } -- first match (CC job.lua:926-937)
-local POLL = { loading = 120, unloading = 120, deliver = 120, at_task = 60, fight = 60, follow = 60 }
+local POLL = { loading = 120, unloading = 120, deliver = 120, at_task = 60, fight = 60, follow = 60, to_player = 60,
+	at_player = 60 }
 run_core.POLL = POLL
+-- Supply: hand over within NEAR of the player, chase past FAR; a local leg is re-aimed once the player is MOVED from its
+-- goal. At most ROUNDS proxies per job, and the same plan SAME times in a row means nothing moves: go home.
+run_core.NEAR, run_core.FAR, run_core.MOVED = 16, 48, 16
+run_core.ROUNDS, run_core.SAME = 10, 3
 
 local ENTER, HANDLE = {}, {} -- per state: what entering it does, and its poll and travel-event handler
 
@@ -51,7 +56,7 @@ local function add_item(load, name, quality, n)
 	load[name][quality] = (load[name][quality] or 0) + n
 end
 
---- Σ bring of the shares + the cargo items + the profile's full amounts (spec §5.3 adopt step 3).
+--- Σ bring of the shares + the cargo (or supply) items + the profile's full amounts (spec §5.3 adopt step 3).
 function run_core.load_of(work, cargo, profile)
 	local load = {}
 	for _, share in ipairs(work or {}) do
@@ -83,7 +88,7 @@ function run_core.new(msg, i, ctx)
 			tasks[#tasks + 1] = p
 		end
 	end
-	local load = run_core.load_of(work, msg.cargo, ctx.profile)
+	local load = run_core.load_of(work, msg.cargo or msg.supply, ctx.profile)
 	local landfill
 	for _, name in ipairs(run_core.LANDFILL) do
 		if load[name] then
@@ -98,6 +103,10 @@ function run_core.new(msg, i, ctx)
 		tasks = tasks, done_tasks = 0, total_tasks = #tasks, load = load, cargo = msg.cargo, landfill = landfill,
 		radius = ctx.radius, reached = 0, sent = {}, status = "new", since = ctx.tick, ammo = ctx.ammo,
 	}
+	if msg.supply then
+		local p = msg.supply.place
+		run.supply = { player = msg.supply.player, place = p and { inst = p.inst, x = p.x, y = p.y } }
+	end
 	if minion then
 		local l = msg.lead
 		run.squad = { leader = l.cid, members = {}, lead = { inst = l.inst, x = l.x, y = l.y } }
@@ -220,7 +229,12 @@ ENTER.to_station = function(run, _, _, acts)
 	end
 	go_station(run, acts)
 end
-ENTER.returning = ENTER.to_station
+ENTER.returning = function(run, f, cfg, acts)
+	if run.supply then
+		acts[#acts + 1] = { "drop_proxy" } -- left behind, its requests would be filled by any network the player is in
+	end
+	return ENTER.to_station(run, f, cfg, acts)
+end
 
 -- A station gone or unpowered on arrival, or unreachable: one other local station with a network, else fail (R-116).
 local function fallback(run, f, acts, why)
@@ -296,6 +310,8 @@ HANDLE.loading = function(run, f, cfg, acts, ev)
 		run.arg = nil
 		if run.kind == "cargo" then
 			return enter(run, "to_dest", f, cfg, acts)
+		elseif run.kind == "supply" then
+			return enter(run, "to_player", f, cfg, acts)
 		end
 		-- R-198: a squad fights or follows from its station (CC destroy.lua:67, minion.lua:84)
 		return enter(run, run.role == "leader" and "fight" or run.role == "minion" and "follow" or "to_work", f, cfg, acts)
@@ -307,6 +323,13 @@ HANDLE.loading = function(run, f, cfg, acts, ev)
 	end
 	if waited(run, f) then
 		-- R-212: asked again every WAIT, as CC re-checks every poll; a station elsewhere may have filled up since
+		if run.kind == "supply" and not f.covers_missing then
+			-- owner: it brings what it can; the player is waiting, so no other station is asked for the rest
+			acts[#acts + 1] = { "requests", "clear" }
+			acts[#acts + 1] = { "balance_ammo" }
+			run.arg = nil
+			return enter(run, "to_player", f, cfg, acts)
+		end
 		if not f.covers_missing and (not run.sent.short or f.tick - run.sent.short >= run_core.WAIT) then
 			run.sent.short, run.status = f.tick, "short"
 			acts[#acts + 1] = { "emit", "short", { cid = run.cid, missing = f.missing } }
@@ -610,6 +633,105 @@ HANDLE.deliver = function(run, f, _, acts, ev)
 	run.next = f.tick + POLL.deliver
 end
 
+-- Supply (SP-24): find the player and follow them; within NEAR, hand over through item-request-proxies on their
+-- character. f.player is the player's character on this tile and surface ({pos, dist}), or false; elsewhere the run
+-- goes by run.supply.place, the controller's last word on where they are.
+local function seek(run, f, acts)
+	local p, place, g = f.player, run.supply.place, run.goal
+	local goal
+	if p then
+		local near = g and g.inst == f.here and (g.x - p.pos.x) ^ 2 + (g.y - p.pos.y) ^ 2 <= run_core.MOVED ^ 2
+		goal = not near and { inst = f.here, x = p.pos.x, y = p.pos.y }
+	elseif place and place.inst ~= f.here then
+		local already = g and g.inst == place.inst and g.x == place.x and g.y == place.y
+		goal = not already and { inst = place.inst, x = place.x, y = place.y }
+	else
+		-- nowhere known, or a place on this tile they have left: wait for the controller (owner: the ctron waits)
+		if g then
+			acts[#acts + 1] = { "stop" }
+		end
+		run.goal = nil
+		run.status, run.arg = "waiting_player", run.supply.player
+		run.next = f.tick + POLL.to_player
+		return
+	end
+	if goal then
+		run.goal = goal
+		acts[#acts + 1] = { "travel", goal, { kind = "follow", radius = 6 } }
+	end
+	run.status, run.arg = "moving", nil
+	run.next = f.tick + POLL.to_player
+end
+
+ENTER.to_player = function(run, f, cfg, acts)
+	run.goal = nil
+	if f.player and f.player.dist <= run_core.NEAR then
+		return enter(run, "at_player", f, cfg, acts)
+	end
+	return seek(run, f, acts)
+end
+
+HANDLE.to_player = function(run, f, cfg, acts, ev)
+	if ev and ev.type == "failed" then
+		run.goal = nil -- asked again later; a route may open meanwhile
+		run.next = f.tick + 5 * POLL.to_player
+		return
+	end
+	if ev and ev.type == "arrived" then
+		run.goal = nil -- where the player was: look again
+	end
+	if f.player and f.player.dist <= run_core.NEAR then
+		return enter(run, "at_player", f, cfg, acts)
+	end
+	return seek(run, f, acts)
+end
+
+local function supply_home(run, f, cfg, acts)
+	acts[#acts + 1] = { "stop" }
+	return enter(run, "returning", f, cfg, acts)
+end
+
+-- A poll at the player: chase them past FAR; with no proxy on them, the next plan, or home when there is nothing left
+-- to hand over or take, no robots, or no progress, once its robots are back (they carry the player's trash, and the
+-- ctron would outrun them and finish its unloading before they dock).
+local function hand_over(run, f, cfg, acts)
+	local p, s = f.player, run.supply
+	if not p or p.dist > run_core.FAR then
+		acts[#acts + 1] = { "stop" }
+		return enter(run, "to_player", f, cfg, acts)
+	end
+	if not f.proxy then
+		local plan = f.supply_plan
+		s.same = plan.sig == s.sig and s.same + 1 or 0
+		s.sig = plan.sig
+		if plan.n == 0 or f.robots < 1 or s.rounds >= run_core.ROUNDS or s.same >= run_core.SAME then
+			if f.out > 0 then
+				run.next = f.tick + POLL.at_player
+				return
+			end
+			return supply_home(run, f, cfg, acts)
+		end
+		s.rounds = s.rounds + 1
+		acts[#acts + 1] = { "proxy", plan }
+	end
+	acts[#acts + 1] = { "follow_player" }
+	run.next = f.tick + POLL.at_player
+end
+
+ENTER.at_player = function(run, f, cfg, acts)
+	run.goal = nil
+	acts[#acts + 1] = { "stop" }
+	run.status, run.arg = "supplying", run.supply.player
+	run.supply.rounds, run.supply.same, run.supply.sig = run.supply.rounds or 0, 0, nil
+	return hand_over(run, f, cfg, acts)
+end
+
+HANDLE.at_player = function(run, f, cfg, acts, ev)
+	if not ev then
+		return hand_over(run, f, cfg, acts)
+	end
+end
+
 -- Interrupts (§5.3), in the spec's order after cancel. Returns true when one fired.
 local function interrupt(run, f, cfg, acts)
 	local s = run.state
@@ -702,6 +824,14 @@ function run_core.step(run, f, cfg, ev)
 			if not run.task then
 				enter(run, "leave_work", f, cfg, acts)
 			end
+		end
+	elseif t == "player_left" then
+		-- the player left this tile: nothing may land on a body that is logged off; the run waits for the controller
+		if run.state == "to_player" or run.state == "at_player" then
+			acts[#acts + 1] = { "drop_proxy" }
+			acts[#acts + 1] = { "stop" }
+			run.supply.place = nil
+			enter(run, "to_player", f, cfg, acts)
 		end
 	elseif t == "leader_lost" then
 		if run.state ~= "returning" and run.state ~= "unloading" then

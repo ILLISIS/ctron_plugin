@@ -16,13 +16,14 @@ const valid = (schema: unknown, value: unknown) => lib.compile(schema as any)(va
 test("the catalogue lists every bridge type of spec §9.2, and each type's sample is valid", () => {
 	assert.deepEqual(Object.keys(UP).sort(), [
 		"ct.delta", "ct.detail.reply", "ct.job.event", "ct.portals", "ct.route.ask", "ct.settings.set", "ct.snapshot",
-		"ct.stock.reply", "ct.ui.cancel", "ct.ui.cargo", "ct.ui.detail.ask", "ct.ui.drop", "ct.ui.watch",
+		"ct.stock.reply", "ct.supply.at", "ct.supply.call", "ct.supply.cancel", "ct.ui.cancel", "ct.ui.cargo",
+		"ct.ui.detail.ask", "ct.ui.drop", "ct.ui.watch",
 	]);
 	assert.deepEqual(Object.keys(DOWN).sort(), [
 		"ct.detail.fetch", "ct.job.assign", "ct.job.cancel", "ct.job.drop", "ct.job.squad", "ct.job.station",
 		"ct.route.reply",
-		"ct.settings", "ct.snapshot.request", "ct.station.set", "ct.stock.query", "ct.ui.detail", "ct.ui.link",
-		"ct.ui.list", "ct.work.clear",
+		"ct.settings", "ct.snapshot.request", "ct.station.set", "ct.stock.query", "ct.supply.place", "ct.supply.state",
+		"ct.ui.detail", "ct.ui.link", "ct.ui.list", "ct.work.clear",
 	]);
 	const samples: Record<string, unknown> = { ...UP_SAMPLES, ...DOWN_SAMPLES };
 	for (const [type, schema] of Object.entries({ ...UP, ...DOWN })) {
@@ -70,6 +71,9 @@ const CLASS_PAYLOADS: [any, unknown][] = [
 	[messages.UiDropEvent, UP_SAMPLES["ct.ui.drop"]],
 	[messages.UiCargoEvent, UP_SAMPLES["ct.ui.cargo"]],
 	[messages.SettingsSetEvent, UP_SAMPLES["ct.settings.set"]],
+	[messages.SupplyCallEvent, UP_SAMPLES["ct.supply.call"]],
+	[messages.SupplyCancelEvent, UP_SAMPLES["ct.supply.cancel"]],
+	[messages.SupplyAtEvent, UP_SAMPLES["ct.supply.at"]],
 	[messages.RouteRequest, UP_SAMPLES["ct.route.ask"]],
 	[messages.JobDetailRequest, UP_SAMPLES["ct.ui.detail.ask"]],
 	[messages.JobAssignEvent, DOWN_SAMPLES["ct.job.assign"]],
@@ -81,13 +85,15 @@ const CLASS_PAYLOADS: [any, unknown][] = [
 	[messages.WorkClearEvent, DOWN_SAMPLES["ct.work.clear"]],
 	[messages.UiListEvent, DOWN_SAMPLES["ct.ui.list"]],
 	[messages.SettingsStateEvent, DOWN_SAMPLES["ct.settings"]],
+	[messages.SupplyStateEvent, DOWN_SAMPLES["ct.supply.state"]],
+	[messages.SupplyPlaceEvent, DOWN_SAMPLES["ct.supply.place"]],
 	[messages.StockQueryRequest, { q: DOWN_SAMPLES["ct.stock.query"].q }],
 	[messages.JobDetailFetchRequest, { jid: DOWN_SAMPLES["ct.detail.fetch"].jid }],
 ];
 
-test("22 classes, each declared in index.ts and round-tripping its payload through JSON", () => {
+test("27 classes, each declared in index.ts and round-tripping its payload through JSON", () => {
 	const classes = Object.values(messages);
-	assert.equal(classes.length, 22);
+	assert.equal(classes.length, 27);
 	assert.deepEqual(new Set(CLASS_PAYLOADS.map(([C]) => C)), new Set(classes), "every class has a payload row");
 	for (const [C, payload] of CLASS_PAYLOADS) {
 		assert.ok(plugin.messages?.includes(C), `${C.name} is declared`);
@@ -194,7 +200,8 @@ test("R-125/R-155: at the maxima of spec §14.2, every up message but ct.portals
 test("R-164: each maximal record alone in a ct.delta, or a stock record in a reply, fits UP_LIMIT", () => {
 	const records: [string, string, unknown][] = [
 		["construction job", "jobs", MAX.job], ["cargo job", "jobs", MAX.cargoJob],
-		["destroy job", "jobs", MAX.destroyJob], ["cell", "cells", MAX.cell], ["need", "needs", MAX.need],
+		["destroy job", "jobs", MAX.destroyJob], ["supply job", "jobs", MAX.supplyJob], ["cell", "cells", MAX.cell],
+		["need", "needs", MAX.need],
 		["ctron", "ctrons", MAX.ctron], ["station", "stations", MAX.station], ["stock record", "", MAX.stockRec],
 	];
 	for (const [name, kind, record] of records) {
@@ -208,7 +215,8 @@ test("R-15/R-155: at the maxima, down messages encode within 3 KB, envelope incl
 	const assign101 = MAX_DOWN.assign101;
 	const assign30 = MAX_DOWN.assign30;
 	assert.equal(assign101.members.length, 101);
-	const cases = [["ct.job.assign, 101 members", assign101], ["ct.job.assign, 30-kind share", assign30]];
+	const cases = [["ct.job.assign, 101 members", assign101], ["ct.job.assign, 30-kind share", assign30],
+		["ct.job.assign, 30-kind supply", MAX_DOWN.assignSupply30]];
 	for (const [name, payload] of cases) {
 		assert.ok(valid(DOWN["ct.job.assign"], payload), name as string);
 		measure(name as string, encoded("ct.job.assign", payload), 3072, false);

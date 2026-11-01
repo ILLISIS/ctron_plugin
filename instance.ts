@@ -5,8 +5,9 @@ import { DOWN, UP, list } from "./contracts.js";
 import {
 	JobAssignEvent, JobCancelEvent, JobDetailFetchRequest, JobDetailRequest, JobDropEvent, JobEventEvent,
 	JobSquadEvent, JobStationEvent, PortalReportEvent, RouteRequest, SettingsSetEvent, SettingsStateEvent,
-	StationSetEvent, StockQueryRequest, TileDeltaEvent, TileSnapshotEvent, UiCancelEvent, UiCargoEvent, UiDropEvent,
-	UiListEvent, UiWatchEvent, WorkClearEvent,
+	StationSetEvent, StockQueryRequest, SupplyAtEvent, SupplyCallEvent, SupplyCancelEvent, SupplyPlaceEvent,
+	SupplyStateEvent, TileDeltaEvent, TileSnapshotEvent, UiCancelEvent, UiCargoEvent, UiDropEvent, UiListEvent,
+	UiWatchEvent, WorkClearEvent,
 } from "./messages.js";
 
 /** How long a request sent to Lua waits for its reply (R-14). */
@@ -47,7 +48,8 @@ const DOWN_EVENTS: [any, string][] = [
 	[JobAssignEvent, "ct.job.assign"], [JobStationEvent, "ct.job.station"], [JobCancelEvent, "ct.job.cancel"],
 	[JobSquadEvent, "ct.job.squad"],
 	[JobDropEvent, "ct.job.drop"], [WorkClearEvent, "ct.work.clear"], [UiListEvent, "ct.ui.list"],
-	[SettingsStateEvent, "ct.settings"], [StationSetEvent, "ct.station.set"],
+	[SettingsStateEvent, "ct.settings"], [StationSetEvent, "ct.station.set"], [SupplyStateEvent, "ct.supply.state"],
+	[SupplyPlaceEvent, "ct.supply.place"],
 ];
 
 /**
@@ -86,6 +88,9 @@ export default async function loadInstancePlugin(context: InstancePluginContext)
 		"ct.ui.drop": on(UP["ct.ui.drop"], p => toController(new UiDropEvent(p))),
 		"ct.ui.cargo": on(UP["ct.ui.cargo"], p => toController(new UiCargoEvent(p))),
 		"ct.settings.set": on(UP["ct.settings.set"], p => toController(new SettingsSetEvent(p))),
+		"ct.supply.call": on(UP["ct.supply.call"], p => toController(new SupplyCallEvent(p))),
+		"ct.supply.cancel": on(UP["ct.supply.cancel"], p => toController(new SupplyCancelEvent(p))),
+		"ct.supply.at": on(UP["ct.supply.at"], p => toController(new SupplyAtEvent(p))),
 		"ct.ui.watch": on(UP["ct.ui.watch"], p => {
 			const key = JSON.stringify({ surface: p.surface, tile: p.tile, expand: p.expand });
 			if (p.on) {

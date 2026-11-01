@@ -6,8 +6,9 @@ import {
 } from "../contracts.js";
 import { itemKey, order, type SlotT } from "./cargo.js";
 import {
-	isCovered, isItemless, keyOf, ownerOf, remaining, totalsKey, type CellKindT, type Commit, type CtronEntry,
-	type Index, type JobEntry, type JobKindT, type Repick, type ShareT, type StationEntry, type StationRefT, type Work,
+	isCovered, isItemless, keyOf, ownerOf, remaining, totalsKey, type Call, type CellKindT, type Commit,
+	type CtronEntry, type Index, type JobEntry, type JobKindT, type PlayerAt, type Repick, type ShareT,
+	type StationEntry, type StationRefT, type SupplyPlaceT, type SupplyStateT, type Work,
 } from "./index.js";
 import { CROSS, type Place } from "./routes.js";
 import { ASSIGN_BYTES, MERGE_RADIUS, mergeable, need, size, withCount, type Amount, type ItemT } from "./sizing.js";
@@ -17,6 +18,8 @@ export const TIMER_MS = 10_000; // R-51
 export const NO_SUPPLIER_MS = 10_000; // 600 ticks (R-59)
 /** Route costs are asked of this many nearest idle ctrons per work (amends §6.3: Routes.cost is too dear for all). */
 export const COST_K = 8;
+/** A ready cell waits at most this long, from its scan's report, for a neighbour whose scan is still running. */
+export const MERGE_WAIT_MS = 15_000;
 
 type JobAssignT = Static<typeof JobAssign>;
 type JobStationT = Static<typeof JobStation>;
@@ -36,7 +39,9 @@ export type Outbound =
 	| { type: "cancel"; payload: JobCancelT }
 	| { type: "squad"; payload: JobSquadT }
 	| { type: "drop"; payload: JobDropT }
-	| { type: "clear"; payload: WorkClearT };
+	| { type: "clear"; payload: WorkClearT }
+	| { type: "supplyState"; payload: SupplyStateT }
+	| { type: "supplyPlace"; payload: SupplyPlaceT };
 
 export interface SchedulerPort {
 	now(): number; // ms
@@ -59,6 +64,11 @@ export function placeOf(r: { inst: number; surface: string; x: number; y: number
 const ORIGIN = { x: 0, y: 0 };
 const NO_AREA = { left_top: ORIGIN, right_bottom: ORIGIN };
 const centerOf = (w: Work) => w.cell.center ?? ORIGIN;
+/** The middle of a wid's 80×80 chunk (CC's key, cells_core.key): a cell's place before its first scan reports one. */
+function chunkCenter(wid: string) {
+	const key = keyOf(wid);
+	return { x: (Math.floor(key / 25000) - 12500) * 80 + 40, y: (key % 25000 - 12500) * 80 + 40 };
+}
 /** One cell's entry in a `ct.job.assign`. */
 const workEntry = (w: Work, a: Amount) => ({
 	wid: w.cell.wid, key: keyOf(w.cell.wid), area: w.cell.area ?? NO_AREA, bring: a.bring, out: a.out,
@@ -74,6 +84,13 @@ export function stationRef(s: StationEntry): StationRefT {
 
 /** One query record folded across tiles: stations that cover everything, and those covering some items (0-based). */
 export interface Cover { all: string[]; some: Array<{ sid: string; idx: number[] }> }
+
+/** The items of `items` that station sid's network covers, by the folded query record. */
+function coveredAt(cover: Cover | undefined, sid: string, items: ItemT[]): ItemT[] {
+	if (cover?.all.includes(sid)) { return items; }
+	const idx = cover?.some.find(x => x.sid === sid)?.idx ?? [];
+	return idx.filter(i => i < items.length).map(i => items[i]);
+}
 
 /** The COST_K stations with the least straight-line detour from -> s -> to; route cost is asked of these only. */
 function nearestStations(
@@ -135,6 +152,36 @@ interface Ctx {
 }
 interface Trigger { st: "idle" | "scheduled" | "running"; last: number; dirty: boolean }
 
+/** owner|kind -> the cells on S whose scan hasn't reported yet (not backed off). */
+function scanningCells(index: Index, S: string, now: number): Map<string, Work[]> {
+	const out = new Map<string, Work[]>();
+	for (const w of index.work.values()) {
+		if (w.cell.surface !== S || w.backoffUntilMs > now || (w.cell.due === 0 && w.cell.scanned !== undefined)) {
+			continue;
+		}
+		const k = `${w.inst}|${w.cell.kind}`;
+		const g = out.get(k);
+		if (g) { g.push(w); } else { out.set(k, [w]); }
+	}
+	return out;
+}
+
+/**
+ * Until when the ready cell w waits for a neighbour of its owner and kind still being scanned, its chunk within merge
+ * reach, so the two go to one ctron; 0 = no wait. CC scans every ready chunk as it merges (`job.lua:264-289`); here a
+ * scan takes a strip a second, so the cells of one small job become ready seconds apart, and each pass sent the cells
+ * ready so far to a ctron of their own (owner: "lots of spiders show up to a small job").
+ */
+function mergeWait(w: Work, scanning: Map<string, Work[]>, horde: boolean): number {
+	if (horde || isItemless(w)) { return 0; } // horde mode never merges
+	const c = centerOf(w);
+	for (const p of scanning.get(`${w.inst}|${w.cell.kind}`) ?? []) {
+		const q = p.cell.center ?? chunkCenter(p.cell.wid);
+		if (Math.hypot(q.x - c.x, q.y - c.y) <= MERGE_RADIUS) { return w.dueAtMs + MERGE_WAIT_MS; }
+	}
+	return 0;
+}
+
 /** c at cost k beats pick at cost low: cheaper, then the work's own tile, then the lower cid (R-52). */
 function beats(w: Work, c: CtronEntry, k: number, pick: CtronEntry, low: number): boolean {
 	if (k !== low) { return k < low; }
@@ -180,6 +227,7 @@ export class Scheduler {
 		const { index, port } = this;
 		const start = port.now();
 		if (!index.holdOver(start, port.running()) || !index.schedulable(S)) { return; }
+		const supplied = await this.supply(S, start);
 		this.bytes = new Map();
 		const commits = index.commitments();
 		const busy = index.busyCids();
@@ -230,12 +278,17 @@ export class Scheduler {
 			const g = destroy.get(w.inst);
 			if (g) { g.push(w); } else { destroy.set(w.inst, [w]); }
 		}
+		const scanning = scanningCells(index, S, start);
 		const plans: Plan[] = [];
 		const ctx: Ctx = { combined, take, horde, S, groups, destroy };
+		let wake = Infinity;
 		for (const w of open) {
 			if (w.cell.kind === "destroy") { this.squad(w, idle, plans, ctx); continue; }
+			const until = mergeWait(w, scanning, horde);
+			if (until > start) { wake = Math.min(wake, until); continue; } // a later cell may still merge it
 			this.planCell(w, idle, plans, ctx);
 		}
+		if (wake !== Infinity) { port.later(wake - start, () => this.trigger(S)); }
 		// no idle ctron left: skip the query; with nobody to carry an order it would cost a round trip every pass
 		const orders = idle.length > 0 ? this.collectOrders(S, start) : [];
 
@@ -272,7 +325,7 @@ export class Scheduler {
 				if (!hit) { this.noSupplier(o.d.sid); return; }
 				const avail = idle.map(c => index.ctrons.get(c.cid))
 					.filter((c): c is CtronEntry => c !== undefined && c.state === "idle" && !busyNow.has(c.cid));
-				const pick = this.cargoCtron(avail, hit.s, hit.covered);
+				const pick = this.carrier(avail, hit.s, { bring: hit.covered, out: 0 }, "cargo");
 				if (!pick) { return; }
 				idle.splice(idle.findIndex(c => c.cid === pick.c.cid), 1);
 				this.send(S, {
@@ -283,6 +336,7 @@ export class Scheduler {
 			});
 			sentCount = sent;
 		}
+		sentCount += supplied;
 		port.trace("ctronv2.sched", "pass", {
 			surface: S, ms: port.now() - start, open: open.length, idle: idleAtStart, plans: sentCount,
 		}, sentCount === 0 && open.length === 0 ? "verbose" : undefined);
@@ -428,21 +482,104 @@ export class Scheduler {
 		return { s: some, covered: idx.filter(i => i < o.items.length).map(i => o.items[i]) };
 	}
 
-	/** R-147: the cheapest ctron to the supplier that can carry a non-empty share of `covered`. */
-	private cargoCtron(avail: CtronEntry[], sup: StationEntry, covered: ItemT[]) {
+	/** R-147: the cheapest ctron to the station that can carry a non-empty share of `a` (cargo, supply). */
+	private carrier(avail: CtronEntry[], sup: StationEntry, a: Amount, profile: "cargo" | "normal") {
 		const skip = new Set<CtronEntry>();
 		for (;;) {
 			const cands = this.nearest(avail, sup, skip);
 			if (cands.length === 0) { return undefined; }
-			let pick: { c: CtronEntry; share: { bring: ItemT[] }; k: number } | undefined;
+			let pick: { c: CtronEntry; share: Amount; k: number } | undefined;
 			for (const c of cands) {
 				skip.add(c);
 				const k = this.port.cost(c, sup);
-				const share = k === Infinity ? null : size({ bring: covered, out: 0 }, c.free.cargo);
+				const share = k === Infinity ? null : size(a, c.free[profile]);
 				if (share && (!pick || k < pick.k || (k === pick.k && c.cid < pick.c.cid))) { pick = { c, share, k }; }
 			}
 			if (pick) { return pick; }
 		}
+	}
+
+	/**
+	 * Player supply, first in each pass (a player waits on it): each waiting call, oldest first, takes the station
+	 * nearest the player whose network has the items (else has some, else the nearest, for the trash alone), then the
+	 * cheapest idle ctron to it that can carry a share: what it misses and its trash slots, in the normal profile, as a
+	 * ctron keeps its robots to hand items over. A call never takes a ctron off its job (owner). Nothing in stock and
+	 * no trash ends the call.
+	 */
+	private async supply(S: string, now: number): Promise<number> {
+		const { index, port } = this;
+		const waiting = [...index.calls.values()]
+			.filter(c => c.jid === undefined && c.surface === S && index.players.get(c.player)?.surface === S)
+			.sort((a, b) => a.since - b.since || (a.player < b.player ? -1 : 1));
+		const idleNow = () => {
+			const busy = index.busyCids();
+			return [...index.ctrons.values()].filter(c => c.surface === S && c.state === "idle" && !busy.has(c.cid)
+				&& !index.isRejected(c.cid, now));
+		};
+		if (waiting.length === 0 || idleNow().length === 0) { return 0; }
+		const pool = new Map([...index.stations.values()].filter(s => s.surface === S).map(s => [s.sid, s]));
+		const entries: StockQT[] = waiting.filter(c => c.items.length > 0)
+			.map(c => ({ qid: `c:${c.player}`, mode: "supply", items: c.items }));
+		const cover = entries.length > 0
+			? await this.ask(new Set([...pool.values()].map(s => s.inst)), entries)
+			: new Map<string, Cover>();
+		const idle = idleNow(); // after the query: a ctron may have left idle meanwhile
+		let sent = 0;
+		for (const c of waiting) {
+			const at = index.players.get(c.player);
+			if (index.calls.get(c.player) !== c || c.jid !== undefined || !at || at.surface !== S) { continue; }
+			const cv = cover.get(`c:${c.player}`);
+			const st = pickStation({ inst: at.inst, surface: S, x: at.x, y: at.y }, undefined, cv, pool, port.cost,
+				"all-some-nearest");
+			if (!st) { continue; }
+			const items = coveredAt(cv, st.sid, c.items);
+			if (items.length === 0 && c.trash === 0) {
+				index.closeCall(c.player, "no_stock");
+				continue;
+			}
+			const pick = this.carrier(idle, st, { bring: items, out: c.trash }, "normal");
+			if (!pick) { continue; } // nobody can carry it now: it waits
+			idle.splice(idle.indexOf(pick.c), 1);
+			this.sendSupply(S, c, pick.c, pick.share, st, at);
+			sent += 1;
+		}
+		return sent;
+	}
+
+	private sendSupply(S: string, call: Call, c: CtronEntry, share: Amount, st: StationEntry, at: PlayerAt) {
+		const jid = this.port.newId();
+		const station = stationRef(st);
+		const player = call.player;
+		this.index.assign({
+			jid, kind: "supply", surface: S, at: c.inst, members: [c.cid], shares: [], station, sizedFrom: new Map(),
+			supply: { player },
+		}, this.port.now());
+		this.port.send(c.inst, {
+			type: "assign",
+			payload: {
+				jid, kind: "supply", surface: S, station, members: [c.cid], work: [],
+				supply: { player, items: share.bring, trash: share.out, place: { inst: at.inst, x: at.x, y: at.y } },
+			},
+		});
+		this.port.trace("ctronv2.job", "assigned", { jid, cid: c.cid, kind: "supply", player, station: st.sid });
+	}
+
+	/** A player's call ends: by their cancel, their death or 5 minutes off the cluster; its job, if any, goes home. */
+	cancelCall(player: string, why: string): void {
+		const call = this.index.calls.get(player);
+		if (!call) { return; }
+		this.index.closeCall(player, why);
+		if (call.jid !== undefined) {
+			this.cancel({ target: "job", kind: "supply", surface: call.surface, id: call.jid });
+		}
+		this.flushSupply();
+	}
+
+	/** Each changed panel state to its player's tile, and where the player is to the tile holding a supply run. */
+	flushSupply(): void {
+		const { states, places } = this.index.takeSupply();
+		states.forEach(([inst, payload]) => this.port.send(inst, { type: "supplyState", payload }));
+		places.forEach(([inst, payload]) => this.port.send(inst, { type: "supplyPlace", payload }));
 	}
 
 	/** After every delta, snapshot and job event: re-picks and re-sends. */
@@ -464,6 +601,7 @@ export class Scheduler {
 			if (j.squad) { this.port.send(inst, this.squadMsg(j)); sent.add(`${jid}|${inst}`); }
 		}
 		this.flushSquad(sent);
+		this.flushSupply();
 	}
 
 	/** Sends the queued squad relays; the controller's tick calls it too (review finding 3). */

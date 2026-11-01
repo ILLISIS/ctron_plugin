@@ -3,8 +3,8 @@ import { Type, type Static } from "@sinclair/typebox";
 import {
 	Delta, Detail, DetailFull, JobAssign, JobCancel, JobDrop, JobEvent, JobSquad, JobStation, Portals, Route,
 	RouteAsk, SettingsSet,
-	SettingsState, Snapshot, StationSet, StockQ, StockResult, UiCancel, UiCargo, UiDetailAsk, UiDrop, UiList, UiWatch,
-	WorkClear,
+	SettingsState, Snapshot, StationSet, StockQ, StockResult, SupplyAt, SupplyCall, SupplyCancel, SupplyPlace,
+	SupplyState, UiCancel, UiCargo, UiDetailAsk, UiDrop, UiList, UiWatch, WorkClear,
 } from "./contracts.js";
 
 // ctron_pluginv2's Clusterio messages (spec §9.3): each carries one contract payload as `payload`. No permission:
@@ -164,6 +164,57 @@ export class SettingsSetEvent {
 	static jsonSchema = Type.Object({ payload: SettingsSet });
 
 	static fromJSON(json: Static<typeof SettingsSetEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: a player calls a ctron to bring their missing requests and take their trash. */
+export class SupplyCallEvent {
+	declare ["constructor"]: typeof SupplyCallEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof SupplyCall>) { }
+
+	static jsonSchema = Type.Object({ payload: SupplyCall });
+
+	static fromJSON(json: Static<typeof SupplyCallEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: a player cancels their call, or died. */
+export class SupplyCancelEvent {
+	declare ["constructor"]: typeof SupplyCancelEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof SupplyCancel>) { }
+
+	static jsonSchema = Type.Object({ payload: SupplyCancel });
+
+	static fromJSON(json: Static<typeof SupplyCancelEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Instance → controller: where a player is on this tile, or that they left it. */
+export class SupplyAtEvent {
+	declare ["constructor"]: typeof SupplyAtEvent;
+	static type = "event" as const;
+	static src = "instance" as const;
+	static dst = "controller" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof SupplyAt>) { }
+
+	static jsonSchema = Type.Object({ payload: SupplyAt });
+
+	static fromJSON(json: Static<typeof SupplyAtEvent.jsonSchema>) {
 		return new this(json.payload);
 	}
 }
@@ -355,6 +406,40 @@ export class SettingsStateEvent {
 	static jsonSchema = Type.Object({ payload: SettingsState });
 
 	static fromJSON(json: Static<typeof SettingsStateEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Controller → instance: a player's call as their panel shows it. */
+export class SupplyStateEvent {
+	declare ["constructor"]: typeof SupplyStateEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof SupplyState>) { }
+
+	static jsonSchema = Type.Object({ payload: SupplyState });
+
+	static fromJSON(json: Static<typeof SupplyStateEvent.jsonSchema>) {
+		return new this(json.payload);
+	}
+}
+
+/** Controller → instance: where a supply job's player is now, for the tile holding its run. */
+export class SupplyPlaceEvent {
+	declare ["constructor"]: typeof SupplyPlaceEvent;
+	static type = "event" as const;
+	static src = "controller" as const;
+	static dst = "instance" as const;
+	static plugin = "ctron_pluginv2" as const;
+
+	constructor(public payload: Static<typeof SupplyPlace>) { }
+
+	static jsonSchema = Type.Object({ payload: SupplyPlace });
+
+	static fromJSON(json: Static<typeof SupplyPlaceEvent.jsonSchema>) {
 		return new this(json.payload);
 	}
 }

@@ -35,12 +35,13 @@ t.test("every status code of spec §8.7 has a severity with an icon and a key in
 		t.expect_true(known[info.key], code .. ": key " .. info.key .. " is in no locale file")
 		n = n + 1
 	end
-	t.expect_eq(n, 42, "codes")
+	t.expect_eq(n, 44, "codes")
 end)
 
-t.test("working names the kind's CC key and cargo keeps job_type_working; an unknown code has no info", function()
+t.test("working names the kind's CC key and cargo and supply keep job_type_working; an unknown code has no info", function()
 	t.expect_eq(core.info("working", "deconstruction").key, "ctron_status.job_type_deconstruction")
 	t.expect_eq(core.info("working", "cargo").key, "ctron_status.job_type_working")
+	t.expect_eq(core.info("working", "supply").key, "ctron_status.job_type_working")
 	t.expect_eq(core.info("working").key, "ctron_status.job_type_working")
 	for _, kind in ipairs({ "construction", "deconstruction", "upgrade", "repair", "destroy" }) do
 		t.expect_true(known[core.info("working", kind).key], kind)

@@ -2,7 +2,8 @@
 import type { Static } from "@sinclair/typebox";
 import {
 	list, type Cell, type CellKind, type Ctron, type Delta, type Job, type JobEvent, type JobKind, type Need,
-	type Share, type Snapshot, type Station, type StationRef,
+	type Share, type Snapshot, type Station, type StationRef, type SupplyAt, type SupplyCall, type SupplyPlace,
+	type SupplyState,
 } from "../contracts.js";
 import { INFLIGHT_HOLD_MS, inflight, itemKey, type Held } from "./cargo.js";
 import type { Full } from "./settings.js";
@@ -20,6 +21,8 @@ export type JobEventT = Static<typeof JobEvent>;
 export type JobKindT = Static<typeof JobKind>;
 export type ShareT = Static<typeof Share>;
 export type StationRefT = Static<typeof StationRef>;
+export type SupplyStateT = Static<typeof SupplyState>;
+export type SupplyPlaceT = Static<typeof SupplyPlace>;
 export type CtronEntry = CtronRecord & { inst: number };
 export type StationEntry = StationRecord & { inst: number };
 export type NeedEntry = NeedRecord & { inst: number };
@@ -38,8 +41,12 @@ export const ASSIGNED_MS = 60_000; // R-126
 export const MOVING_MS = 60_000; // R-64
 export const BACKOFF_MS = 300_000; // R-62, R-130
 export const DESTROY_RETRY_MS = 5_000; // R-208: CC's default job_start_delay (300 ticks), before the defaults exist
+export const OFFLINE_MS = 300_000; // owner: a call whose player is off the cluster for 5 minutes is cancelled
 
 const LEAVING = new Set<string>(["leave_work", "returning", "unloading"]); // run states of a leader leaving the work
+const CARRIERS = new Set<string>(["cargo", "supply"]); // kinds whose worker's part has no shares
+/** What a player's panel shows for the state of the run carrying their call; before to_player, "loading". */
+const SEEN: Record<string, "coming" | "delivering"> = { to_player: "coming", at_player: "delivering" };
 
 export type JobState = "assigned" | "running" | "frozen";
 export interface JobEntry {
@@ -66,6 +73,15 @@ export interface JobEntry {
 	resend: boolean; // an `unknown` came back; re-send on the next record
 	squad?: { gone: Set<string>; done: boolean }; // destroy: minions gone from the squad; its release (R-202, R-203)
 	stations: Map<string, StationRefT>; // a squad's minion cid -> its own station (R-196)
+	supply?: { player: string }; // a supply job: whose call it carries
+}
+/** Where a player is: the tile that last reported them, and their surface and position there. */
+export interface PlayerAt { inst: number; surface: string; x: number; y: number }
+/** A player's open call: what they miss and how many trash slots hold something, at the time they called. */
+export interface Call {
+	player: string; surface: string; items: ItemT[]; trash: number; since: number;
+	jid?: string; // the job carrying it, once assigned
+	away?: number; // ms since no tile reports the player (OFFLINE_MS)
 }
 /** A squad relay waiting for the scheduler: the whole squad state to `inst`, or a cancel (squads.md §4.4). */
 export interface SquadRelay { inst: number; jid: string; cancel?: true }
@@ -75,7 +91,7 @@ export interface Commit { bring: Map<string, number>; out: number; live: number 
 export interface Assign {
 	jid: string; kind: JobKindT; surface: string; at: number; members: string[]; // lead first (R-153)
 	shares: ShareT[]; station: StationRefT; cargo?: { dest: StationRefT; items: ItemT[] };
-	sizedFrom: Map<string, string>; stations?: Map<string, StationRefT>;
+	sizedFrom: Map<string, string>; stations?: Map<string, StationRefT>; supply?: { player: string };
 }
 
 /** R-130: order-independent bring + out + n, to tell whether a cell changed under a job. */
@@ -139,6 +155,14 @@ export class Index {
 	private readonly resends: Array<{ jid: string; inst: number }> = [];
 	private readonly relays = new Map<string, SquadRelay>(); // jid|inst|cancel -> relay
 	private holdLatched = false;
+	/** Every player some tile reports, by name; a tile's leave removes them only while it owns them (R-123). */
+	readonly players = new Map<string, PlayerAt>();
+	/** Open supply calls by player: one each. */
+	readonly calls = new Map<string, Call>();
+	private readonly ended = new Map<string, string>(); // player -> how their last call ended, for their panel
+	private readonly shown = new Map<string, string>(); // player -> "inst|st|why" last sent to their tile
+	private readonly stateDirty = new Set<string>(); // players whose panel may show something new
+	private readonly placeDirty = new Set<string>(); // supply jids whose run is told where the player is
 
 	/** destroyRetryMs: the effective job_start_delay in ms, or undefined before the settings defaults exist (R-208). */
 	constructor(private readonly startedMs: number, private readonly destroyRetryMs?: () => number | undefined) {}
@@ -230,7 +254,7 @@ export class Index {
 	/** The tile left running: its records go. Not an owner removal. */
 	stop(inst: number): void {
 		// No releasePending: a stop is not an owner removal; a pending share waits for the owner's snapshot (R-124).
-		for (const map of [this.ctrons, this.stations, this.needs]) { this.sweep(map, inst, new Set()); }
+		for (const map of [this.ctrons, this.stations, this.needs, this.players]) { this.sweep(map, inst, new Set()); }
 		for (const wid of [...this.work.keys()]) {
 			if (ownerOf(wid) === inst) { this.work.delete(wid); }
 		}
@@ -284,8 +308,10 @@ export class Index {
 			movingSince: new Map(), shares: a.shares, sizedFrom: a.sizedFrom, failed: false, station: a.station,
 			cargo: a.cargo, createdMs: now, cancelled: false, drops: [], repickDone: false, resend: false,
 			squad: a.kind === "destroy" ? { gone: new Set(), done: false } : undefined,
-			stations: new Map(a.stations),
+			stations: new Map(a.stations), supply: a.supply,
 		});
+		const call = a.supply && this.calls.get(a.supply.player);
+		if (call) { call.jid = a.jid; this.stateDirty.add(call.player); }
 	}
 
 	/** R-126, R-131, R-139, R-143: a tile's event about a job. Unknown jids are ignored. */
@@ -300,6 +326,7 @@ export class Index {
 				// R-211: a squad rejected on one tile is cancelled on all of them: the rejecting tile may hold the
 				// leader's adopted run too (review finding 1)
 				if (job.squad) { this.tilesOf(job).forEach(t => this.relay(job.jid, t, true)); }
+				this.reopen(job);
 				this.jobs.delete(job.jid);
 				for (const cid of job.members) { this.rejected.set(cid, now + ASSIGNED_MS); }
 				break;
@@ -327,6 +354,7 @@ export class Index {
 		job.ended.set(ev.cid, ev.ev as "done" | "lost" | "failed");
 		job.movingSince.delete(ev.cid);
 		this.squadEnded(job, ev.cid);
+		if (ev.cid === job.lead) { this.supplyEnded(job, ev.ev as "done" | "lost" | "failed"); }
 		if (ev.cid === job.lead && ev.left !== undefined) { job.left = ev.left; }
 		// a minion's run carries no work (R-209): its failure does not fail the job (review finding 7)
 		if (ev.ev === "failed" && (!job.squad || ev.cid === job.lead)) { job.failed = true; job.failedWid = ev.wid; }
@@ -353,6 +381,7 @@ export class Index {
 				createdMs: now, cancelled: false, drops: [], repickDone: false, resend: false,
 			};
 			this.jobs.set(rec.jid, job);
+			this.supplyFromRecord(job, rec, now);
 		}
 		if (job.state !== "running") { job.state = "running"; }
 		const cids = list<string>(rec.members);
@@ -367,7 +396,7 @@ export class Index {
 		}
 		const holdsLead = job.lead !== ""
 			? cids.includes(job.lead)
-			: list<ShareT>(rec.shares).length > 0 || rec.kind === "cargo";
+			: list<ShareT>(rec.shares).length > 0 || CARRIERS.has(rec.kind);
 		if (holdsLead) {
 			if (job.lead === "") { job.lead = cids[0] ?? ""; }
 			job.at = inst;
@@ -375,6 +404,7 @@ export class Index {
 			job.left = rec.left ?? job.left;
 			job.record = rec;
 			if (LEAVING.has(rec.state)) { this.release(job); } // R-203
+			this.supplyRecord(job, rec.state);
 			if (rec.cargo) { job.cargo = { dest: rec.cargo.dest, items: list<ItemT>(rec.cargo.items) }; }
 			if ((rec.status === "short" || rec.status === "trash_full") && !job.repick && !job.repickDone) {
 				job.repick = { jid: job.jid, cid: job.lead, ev: rec.status, items: list<ItemT>(rec.missing) };
@@ -387,6 +417,23 @@ export class Index {
 			this.resends.push({ jid: job.jid, inst });
 		}
 		this.leftPart(job, prev.filter(c => !cids.includes(c)), now);
+	}
+
+	/** A supply job first seen in a record (a restarted controller): the call it carries is open again, assigned. */
+	private supplyFromRecord(job: JobEntry, rec: JobRecord, now: number) {
+		if (!rec.supply) { return; }
+		const { player } = rec.supply;
+		job.supply = { player };
+		if (!this.calls.has(player) && !LEAVING.has(rec.state)) {
+			this.calls.set(player, { player, surface: rec.surface, items: [], trash: 0, since: now, jid: rec.jid });
+		}
+	}
+
+	/** The run's record: the player's panel follows its state; handed over, it goes home and the call is done. */
+	private supplyRecord(job: JobEntry, state: string) {
+		if (!job.supply) { return; }
+		this.stateDirty.add(job.supply.player);
+		if (LEAVING.has(state)) { this.closeCall(job.supply.player, "done", job.jid); }
 	}
 
 	/** R-123: only this instance's part changes. */
@@ -434,6 +481,7 @@ export class Index {
 	/** A tile reports a part of the job for the first time: a squad's gets the whole state at once (R-199). */
 	private newPart(job: JobEntry, inst: number, rec: JobRecord, now: number) {
 		if (job.squad) { this.relay(job.jid, inst); }
+		if (job.supply) { this.placeDirty.add(job.jid); } // its run moved tile: it learns where the player is
 		if (rec.lead !== undefined) { this.namedLead(job, rec.lead, now); }
 	}
 
@@ -496,15 +544,17 @@ export class Index {
 		if (!job) { return undefined; }
 		job.cancelled = true;
 		job.shares = [];
+		if (job.supply) { this.closeCall(job.supply.player, "cancelled", jid); }
 		return job;
 	}
 
 	/** Called every second: expires unanswered assigns, ends members listed nowhere for 60 s (R-64). */
-	tick(now: number): { expired: string[]; lost: Array<[string, string]> } {
+	tick(now: number): { expired: string[]; lost: Array<[string, string]>; offline: string[] } {
 		const expired: string[] = [];
 		const lost: Array<[string, string]> = [];
 		for (const job of [...this.jobs.values()]) {
 			if (job.state === "assigned" && now - job.createdMs >= ASSIGNED_MS) {
+				this.reopen(job);
 				this.jobs.delete(job.jid);
 				expired.push(job.jid);
 				continue;
@@ -515,6 +565,7 @@ export class Index {
 				job.movingSince.delete(cid);
 				job.ended.set(cid, "lost");
 				this.squadEnded(job, cid);
+				if (cid === job.lead) { this.supplyEnded(job, "lost"); }
 				lost.push([job.jid, cid]);
 			}
 			this.maybeEnd(job, now);
@@ -529,7 +580,116 @@ export class Index {
 		for (const [sid, until] of [...this.orderBackoff]) {
 			if (until <= now) { this.orderBackoff.delete(sid); }
 		}
-		return { expired, lost };
+		const offline: string[] = [];
+		for (const call of this.calls.values()) {
+			if (this.players.has(call.player)) {
+				call.away = undefined;
+			} else {
+				call.away ??= now;
+				if (now - call.away >= OFFLINE_MS) { offline.push(call.player); }
+			}
+		}
+		return { expired, lost, offline };
+	}
+
+	/** A tile reports where a player is, or (no surface) that they left it; a leave counts only from the owner. */
+	playerAt(inst: number, p: Static<typeof SupplyAt>): void {
+		const old = this.players.get(p.player);
+		if (p.surface === undefined) {
+			if (old?.inst === inst) { this.players.delete(p.player); }
+			this.shown.delete(p.player); // the tile forgets the player's panel state: tell the next one again
+			return;
+		}
+		this.players.set(p.player, { inst, surface: p.surface, x: p.x ?? 0, y: p.y ?? 0 });
+		this.stateDirty.add(p.player);
+		const call = this.calls.get(p.player);
+		if (call?.jid !== undefined) { this.placeDirty.add(call.jid); }
+	}
+
+	/**
+	 * A player's call. One per player: a second only re-sends the state. A surface without stations can't be served.
+	 * True when a call was opened.
+	 */
+	call(inst: number, c: Static<typeof SupplyCall>, now: number): boolean {
+		this.playerAt(inst, c);
+		if (this.calls.has(c.player)) {
+			this.shown.delete(c.player); // the tile showed "waiting" when the button was pressed: tell it again
+			return false;
+		}
+		if (!this.schedulable(c.surface)) {
+			this.ended.set(c.player, "no_stations");
+			return false;
+		}
+		this.calls.set(c.player, {
+			player: c.player, surface: c.surface, items: list<ItemT>(c.items), trash: c.trash, since: now,
+		});
+		this.ended.delete(c.player);
+		return true;
+	}
+
+	/** The call ends; with jid, only if that job still carries it. */
+	closeCall(player: string, why: string, jid?: string): void {
+		const call = this.calls.get(player);
+		if (!call || (jid !== undefined && call.jid !== jid)) { return; }
+		this.calls.delete(player);
+		this.ended.set(player, why);
+		this.stateDirty.add(player);
+	}
+
+	/** The job is gone before it reached the player (rejected, unanswered, its ctron lost): the call waits again. */
+	private reopen(job: JobEntry) {
+		const call = job.supply && this.calls.get(job.supply.player);
+		if (call?.jid === job.jid) {
+			call.jid = undefined;
+			this.stateDirty.add(call.player);
+		}
+	}
+
+	private supplyEnded(job: JobEntry, ev: "done" | "lost" | "failed") {
+		if (!job.supply) { return; }
+		if (ev === "lost") {
+			this.reopen(job);
+		} else {
+			this.closeCall(job.supply.player, ev, job.jid);
+		}
+	}
+
+	/** What a player's panel shows. */
+	supplyState(player: string): SupplyStateT {
+		const call = this.calls.get(player);
+		if (!call) {
+			const why = this.ended.get(player);
+			return { player, st: "none", ...why !== undefined && { why } };
+		}
+		if (call.jid === undefined) { return { player, st: "waiting" }; }
+		return { player, st: SEEN[this.jobs.get(call.jid)?.record?.state ?? ""] ?? "loading" };
+	}
+
+	/** The panel states that changed, each for the player's tile, and the places supply runs need. */
+	takeSupply(): { states: Array<[number, SupplyStateT]>; places: Array<[number, SupplyPlaceT]> } {
+		const states: Array<[number, SupplyStateT]> = [];
+		for (const player of this.stateDirty) {
+			const at = this.players.get(player);
+			if (!at) { continue; } // off the cluster: their next tile is told on arrival (playerAt)
+			const state = this.supplyState(player);
+			const key = `${at.inst}|${state.st}|${state.why ?? ""}`;
+			if (this.shown.get(player) !== key) {
+				this.shown.set(player, key);
+				states.push([at.inst, state]);
+			}
+		}
+		this.stateDirty.clear();
+		const places: Array<[number, SupplyPlaceT]> = [];
+		for (const jid of this.placeDirty) {
+			const job = this.jobs.get(jid);
+			const at = job?.supply && this.players.get(job.supply.player);
+			const inst = job && this.holderOf(jid, job.lead);
+			if (job && at && inst !== undefined && at.surface === job.surface) {
+				places.push([inst, { jid, inst: at.inst, x: at.x, y: at.y }]);
+			}
+		}
+		this.placeDirty.clear();
+		return { states, places };
 	}
 
 	/** One walk over every live job and pending release; nothing is kept in sync. */
@@ -588,8 +748,13 @@ export class Index {
 		return out;
 	}
 
+	/** The jobs to send again to a tile that answered `unknown`; a supply run there also needs the player's place. */
 	takeResends(): Array<{ jid: string; inst: number }> {
-		return this.resends.splice(0);
+		const out = this.resends.splice(0);
+		for (const { jid } of out) {
+			if (this.jobs.get(jid)?.supply) { this.placeDirty.add(jid); }
+		}
+		return out;
 	}
 
 	/** The squad relays queued since the last call (squads.md §4.4). */

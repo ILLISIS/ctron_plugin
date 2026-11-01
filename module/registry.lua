@@ -23,6 +23,7 @@ local COLORS = {
 	destroy = { r = 0, g = 0, b = 0, a = 0.6 },
 	minion = { r = 255, g = 255, b = 0, a = 128 },
 	cargo = { r = 0.55, g = 0.55, b = 0.55, a = 0.75 },
+	supply = { r = 1, g = 0.5, b = 0, a = 0.4 },
 }
 
 local PROFILES = { "normal", "destroy", "cargo" }

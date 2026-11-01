@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-	ASSIGNED_MS, BACKOFF_MS, DESTROY_RETRY_MS, HOLD_MS, Index, MOVING_MS, keyOf, ownerOf, remaining, totalsKey,
-	type CellRecord, type CtronRecord,
+	ASSIGNED_MS, BACKOFF_MS, DESTROY_RETRY_MS, HOLD_MS, Index, MOVING_MS, OFFLINE_MS, keyOf, ownerOf, remaining,
+	totalsKey, type CellRecord, type CtronRecord,
 } from "../../cluster/index.js";
 import { INFLIGHT_HOLD_MS } from "../../cluster/cargo.js";
 
@@ -367,7 +367,7 @@ test("cargo inflight: the live load, then held 30 s after done; nothing held aft
 	assert.equal(ix.inflightTo("2.5", 1000 + INFLIGHT_HOLD_MS + 1).get(key), undefined, "c2 held nothing");
 });
 
-/* eslint-disable max-len */ // the squad fixtures are one-line records
+/* eslint-disable @stylistic/max-len */ // the squad fixtures are one-line records
 // Squads (squads.md §4.4): the relay queue.
 const sq = (ix: Index, jid = "s1", members = ["1.1", "2.1"], at = 1, stations?: Map<string, any>) => ix.assign({
 	jid, kind: "destroy", surface: "nauvis", at, members, shares: [{ wid: W2, bring: [], out: 0 }], station: ST,
@@ -526,4 +526,100 @@ test("a destroy cell backs off the effective job_start_delay, 5 s before it is k
 	ix.jobEvent(1, ev("j1", "done", { cid: "1.1", left: 500 }), 10);
 	ix.delta(2, { cells: { up: [cell(wid, { kind: "destroy", bring: [], scanned: 520 })], rm: [] } } as any, 1000);
 	assert.equal(ix.work.get(wid)!.backoffUntilMs, 8000);
+});
+
+// Player supply: where players are, one call each, and what each player's panel is told.
+const CALL = { player: "ann", surface: "nauvis", x: 10, y: 0, items: [["iron-plate", "normal", 100, 100]], trash: 1 } as any;
+const SST = { sid: "1.9", inst: 1, x: 0, y: 0 };
+const supplyJob = (state: string, extra: Record<string, unknown> = {}) => ({
+	jid: "j1", kind: "supply", surface: "nauvis", members: ["1.1"], state, status: "moving", tasks: [0, 0],
+	station: SST, shares: [], supply: { player: "ann" }, ...extra,
+}) as any;
+const states = (ix: Index) => ix.takeSupply().states.map(([inst, s]) => [inst, s.st, s.why]);
+
+test("supply: a leave counts only from the tile that owns the player; a stopped tile's players go", () => {
+	const ix = new Index(0);
+	ix.playerAt(1, { player: "ann", surface: "nauvis", x: 1, y: 2 });
+	ix.playerAt(2, { player: "ann", surface: "nauvis", x: 3, y: 4 }); // joined tile 2 before tile 1's leave landed
+	ix.playerAt(1, { player: "ann" });
+	assert.deepEqual(ix.players.get("ann"), { inst: 2, surface: "nauvis", x: 3, y: 4 });
+	ix.stop(2);
+	assert.equal(ix.players.has("ann"), false);
+});
+
+test("supply: a call's life as the panel sees it, sent once per change to the player's tile", () => {
+	const ix = new Index(0);
+	ix.snapshotPart(1, snap(1, { ctrons: [ctron("1.1")], stations: [station("1.9")] }), 0);
+	assert.equal(ix.call(1, CALL, 5), true);
+	assert.equal(ix.call(1, CALL, 6), false, "one call per player");
+	assert.deepEqual(states(ix), [[1, "waiting", undefined]]);
+	ix.assign({ jid: "j1", kind: "supply", surface: "nauvis", at: 1, members: ["1.1"], shares: [], station: SST,
+		sizedFrom: new Map(), supply: { player: "ann" } }, 10);
+	assert.equal(ix.calls.get("ann")!.jid, "j1");
+	assert.deepEqual(states(ix), [[1, "loading", undefined]]);
+	ix.delta(1, { jobs: { up: [supplyJob("loading")], rm: [] } } as any, 20);
+	assert.deepEqual(states(ix), [], "no change, nothing sent");
+	ix.delta(1, { jobs: { up: [supplyJob("to_player")], rm: [] } } as any, 30);
+	ix.delta(1, { jobs: { up: [supplyJob("at_player")], rm: [] } } as any, 40);
+	assert.deepEqual(states(ix), [[1, "delivering", undefined]]);
+	ix.delta(1, { jobs: { up: [supplyJob("returning")], rm: [] } } as any, 50);
+	assert.equal(ix.calls.has("ann"), false, "handed over: the call is done while the ctron goes home");
+	assert.deepEqual(states(ix), [[1, "none", "done"]]);
+	assert.equal(ix.call(1, { ...CALL, surface: "space" }, 60), false, "no station on that surface");
+	assert.deepEqual(states(ix), [[1, "none", "no_stations"]]);
+});
+
+test("supply: a rejected, unanswered or lost job puts the call back to waiting; a failed one ends it", () => {
+	const ix = new Index(0);
+	ix.snapshotPart(1, snap(1, { ctrons: [ctron("1.1")], stations: [station("1.9")] }), 0);
+	const assign = (jid: string, now: number) => ix.assign({ jid, kind: "supply", surface: "nauvis", at: 1,
+		members: ["1.1"], shares: [], station: SST, sizedFrom: new Map(), supply: { player: "ann" } }, now);
+	ix.call(1, CALL, 0);
+	assign("j1", 0);
+	ix.jobEvent(1, { jid: "j1", ev: "rejected", tick: 1, cid: "1.1", why: "full" }, 1);
+	assert.equal(ix.calls.get("ann")!.jid, undefined);
+	assign("j2", 2);
+	ix.tick(2 + ASSIGNED_MS);
+	assert.equal(ix.calls.get("ann")!.jid, undefined, "60 s unanswered");
+	assign("j3", ASSIGNED_MS + 10);
+	ix.jobEvent(1, { jid: "j3", ev: "adopted", tick: 1 }, ASSIGNED_MS + 11);
+	ix.jobEvent(1, { jid: "j3", ev: "lost", tick: 2, cid: "1.1" }, ASSIGNED_MS + 12);
+	assert.equal(ix.calls.get("ann")!.jid, undefined, "its ctron destroyed: another goes");
+	assign("j4", ASSIGNED_MS + 20);
+	ix.jobEvent(1, { jid: "j4", ev: "failed", tick: 3, cid: "1.1", why: "no_route" }, ASSIGNED_MS + 21);
+	assert.equal(ix.calls.has("ann"), false);
+	assert.deepEqual(states(ix), [[1, "none", "failed"]]);
+});
+
+test("supply: a player off the cluster for 5 minutes is reported offline; a return clears the clock", () => {
+	const ix = new Index(0);
+	ix.snapshotPart(1, snap(1, { stations: [station("1.9")] }), 0);
+	ix.call(1, CALL, 0);
+	ix.playerAt(1, { player: "ann" });
+	assert.deepEqual(ix.tick(1000).offline, []);
+	assert.deepEqual(ix.tick(1000 + OFFLINE_MS - 1).offline, []);
+	ix.playerAt(2, { player: "ann", surface: "nauvis", x: 0, y: 0 });
+	ix.tick(1000 + OFFLINE_MS);
+	ix.playerAt(2, { player: "ann" });
+	ix.tick(2000 + OFFLINE_MS);
+	assert.deepEqual(ix.tick(1999 + 2 * OFFLINE_MS).offline, [], "the clock restarted at the second leave");
+	assert.deepEqual(ix.tick(2000 + 2 * OFFLINE_MS).offline, ["ann"]);
+});
+
+test("supply: the run's tile is told where the player went; a restarted controller rebuilds the call", () => {
+	const ix = new Index(0);
+	ix.snapshotPart(1, snap(1, { ctrons: [ctron("1.1")], stations: [station("1.9")] }), 0);
+	ix.call(1, CALL, 0);
+	ix.assign({ jid: "j1", kind: "supply", surface: "nauvis", at: 1, members: ["1.1"], shares: [], station: SST,
+		sizedFrom: new Map(), supply: { player: "ann" } }, 0);
+	ix.delta(1, { jobs: { up: [supplyJob("to_player")], rm: [] } } as any, 1);
+	ix.takeSupply();
+	ix.playerAt(1, { player: "ann" });
+	ix.playerAt(2, { player: "ann", surface: "nauvis", x: 500, y: 7 });
+	const out = ix.takeSupply();
+	assert.deepEqual(out.places, [[1, { jid: "j1", inst: 2, x: 500, y: 7 }]], "to the tile holding the run");
+	assert.deepEqual(out.states.map(([inst, s]) => [inst, s.st]), [[2, "coming"]], "the new tile shows the call");
+	const fresh = new Index(0);
+	fresh.snapshotPart(1, snap(1, { ctrons: [ctron("1.1")], jobs: [supplyJob("at_player")] }), 0);
+	assert.equal(fresh.calls.get("ann")!.jid, "j1");
 });

@@ -38,9 +38,9 @@ const Bool = Type.Boolean();
 
 export const JobKind = Type.Union([
 	Type.Literal("construction"), Type.Literal("deconstruction"), Type.Literal("upgrade"), Type.Literal("repair"),
-	Type.Literal("destroy"), Type.Literal("cargo"),
+	Type.Literal("destroy"), Type.Literal("cargo"), Type.Literal("supply"),
 ]);
-/** Cargo has no cells: it comes from needs (§4.2). */
+/** Cargo and supply have no cells: it comes from needs (§4.2). */
 export const CellKind = Type.Union([
 	Type.Literal("construction"), Type.Literal("deconstruction"), Type.Literal("upgrade"), Type.Literal("repair"),
 	Type.Literal("destroy"),
@@ -50,7 +50,8 @@ export const Role = Type.Union([Type.Literal("worker"), Type.Literal("leader"), 
 export const RunState = Type.Union([
 	Type.Literal("to_station"), Type.Literal("loading"), Type.Literal("to_work"), Type.Literal("at_task"),
 	Type.Literal("fight"), Type.Literal("follow"), Type.Literal("to_dest"), Type.Literal("deliver"),
-	Type.Literal("leave_work"), Type.Literal("returning"), Type.Literal("unloading"),
+	Type.Literal("leave_work"), Type.Literal("returning"), Type.Literal("unloading"), Type.Literal("to_player"),
+	Type.Literal("at_player"),
 ]);
 export const CtronState = Type.Union([Type.Literal("idle"), Type.Literal("busy"), Type.Literal("unfit")]);
 
@@ -62,6 +63,8 @@ export const Pos = Type.Object({ x: Num, y: Num });
 export const Area = Type.Object({ left_top: Pos, right_bottom: Pos });
 /** A station as a place (§4.4): where a run loads and finishes, or a cargo destination. */
 export const StationRef = Type.Object({ sid: Str, inst: Int, x: Num, y: Num });
+/** Where a player stands: the tile and the position on it (supply). */
+export const PlayerPlace = Type.Object({ inst: Int, x: Num, y: Num });
 /** A chosen item, [name, quality] (settings). */
 export const ItemRef = Type.Tuple([Str, Str]);
 
@@ -95,6 +98,8 @@ export const Job = Type.Object({
 	cargo: Opt(Type.Object({ dest: StationRef, items: Items })),
 	/** The squad leader's cid, on a part without the leader (squads.md §6). */
 	lead: Opt(Str),
+	/** The player a supply job serves, so a restarted controller knows whose call it carries. */
+	supply: Opt(Type.Object({ player: Str })),
 });
 
 // Settings (§4.6).
@@ -187,6 +192,15 @@ export const UiCargo = Type.Object({ sid: Str, slots: Opt(List(CargoSlot)), name
 export const UiDetailAsk = Type.Object({ req: Str, jid: Str });
 /** An in-game settings edit (§6.11): no surface = the global keys; "*" = every surface. */
 export const SettingsSet = Type.Object({ surface: Opt(Str), patch: SettingsPatch });
+/**
+ * A player calls a ctron from the panel on their character screen: what they miss of their logistic requests (at most
+ * 30 kinds, with stack sizes) and how many trash slots hold something.
+ */
+export const SupplyCall = Type.Object({ player: Str, surface: Str, x: Num, y: Num, items: Items, trash: Int });
+/** A player cancels their call, or died ("died"). */
+export const SupplyCancel = Type.Object({ player: Str, why: Opt(Str) });
+/** A player is on this tile at (x, y): on joining, changing surface and while called. No surface = they left. */
+export const SupplyAt = Type.Object({ player: Str, surface: Opt(Str), x: Opt(Num), y: Opt(Num) });
 
 // Down: TS → Lua (§9.2), each message at most 3 KB (R-15).
 export const WorkShare = Type.Object({ wid: Str, key: Int, area: Area, bring: Type.Array(Item), out: Int });
@@ -198,6 +212,8 @@ export const JobAssign = Type.Object({
 	jid: Str, kind: JobKind, surface: Str, station: StationRef, members: Type.Array(Str), work: Type.Array(WorkShare),
 	cargo: Opt(Type.Object({ dest: StationRef, items: Type.Array(Item) })),
 	lead: Opt(Type.Object({ cid: Str, inst: Int, x: Num, y: Num })),
+	/** A supply job: the player, the items loaded for them, their trash slots and where they last stood. */
+	supply: Opt(Type.Object({ player: Str, items: Type.Array(Item), trash: Int, place: Opt(PlayerPlace) })),
 });
 export const JobStation = Type.Object({ jid: Str, cid: Str, station: StationRef, why: Str });
 export const JobCancel = Type.Object({ jid: Str });
@@ -277,6 +293,17 @@ export const UiList = Type.Object({
 export const DetailFull = Type.Composite([Detail, Type.Object({ job: Type.Object(jobFields) })]);
 export const UiDetail = Type.Object({ req: Str, detail: Opt(DetailFull) });
 export const UiLink = Type.Object({ up: Bool });
+/**
+ * A player's call as their panel shows it: none, waiting for a ctron, loading, coming, delivering; why = how the last
+ * call ended (done, cancelled, died, offline, failed, no_stock, no_stations).
+ */
+export const SupplySt = Type.Union([
+	Type.Literal("none"), Type.Literal("waiting"), Type.Literal("loading"), Type.Literal("coming"),
+	Type.Literal("delivering"),
+]);
+export const SupplyState = Type.Object({ player: Str, st: SupplySt, why: Opt(Str) });
+/** Where a supply job's player is now, for the tile holding its run. */
+export const SupplyPlace = Type.Object({ jid: Str, inst: Int, x: Num, y: Num });
 /** surfaces = the schedulable set (R-145). */
 export const SettingsState = Type.Object({ overrides: Overrides, surfaces: Type.Array(Str) });
 
@@ -285,7 +312,8 @@ export const UP = {
 	"ct.snapshot": Snapshot, "ct.delta": Delta, "ct.job.event": JobEvent, "ct.stock.reply": StockReply,
 	"ct.route.ask": RouteAsk, "ct.portals": Portals, "ct.detail.reply": DetailReply, "ct.ui.watch": UiWatch,
 	"ct.ui.cancel": UiCancel, "ct.ui.drop": UiDrop, "ct.ui.cargo": UiCargo, "ct.ui.detail.ask": UiDetailAsk,
-	"ct.settings.set": SettingsSet,
+	"ct.settings.set": SettingsSet, "ct.supply.call": SupplyCall, "ct.supply.cancel": SupplyCancel,
+	"ct.supply.at": SupplyAt,
 };
 /** TS → Lua: every bridge type of spec §9.2 ("down") and its payload. */
 export const DOWN = {
@@ -294,5 +322,5 @@ export const DOWN = {
 	"ct.work.clear": WorkClear,
 	"ct.stock.query": StockQuery,
 	"ct.route.reply": RouteReply, "ct.detail.fetch": DetailFetch, "ct.ui.list": UiList, "ct.ui.detail": UiDetail,
-	"ct.ui.link": UiLink, "ct.settings": SettingsState,
+	"ct.ui.link": UiLink, "ct.settings": SettingsState, "ct.supply.state": SupplyState, "ct.supply.place": SupplyPlace,
 };

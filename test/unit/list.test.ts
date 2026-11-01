@@ -1,4 +1,4 @@
-/* eslint-disable max-len */ // the brief's fixtures are one-line records
+/* eslint-disable @stylistic/max-len */ // the brief's fixtures are one-line records
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Index } from "../../cluster/index.js";

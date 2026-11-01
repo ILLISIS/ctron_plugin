@@ -145,6 +145,7 @@ function report.snapshot()
 	for _, rep in pairs(ct.portals.reports()) do
 		bridge.send("ct.portals", rep)
 	end
+	ct.supply.report_all() -- a restarted controller learns where every player is
 	if next(s.dirty.ctron) then
 		ct.signals.flush()
 	end

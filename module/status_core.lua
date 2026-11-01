@@ -24,6 +24,8 @@ core.CODES = {
 	no_stations = { "ctron_status.no_stations_found", "problem" },
 	working = { "ctron_status.job_type_working", "ok" },
 	delivering = { "ctron_status.delivering_cargo", "ok" },
+	supplying = { "ctronv2.supplying", "ok" },
+	waiting_player = { "ctronv2.waiting_player", "wait" },
 	clearing = { "ctron_status.clearing_inventory", "ok" },
 	dest_invalid = { "ctron_status.dest_station_invalid", "problem" },
 	missing_robots = { "ctron_status.missing_robots", "problem" },
@@ -61,7 +63,7 @@ function core.info(code, kind)
 	if not c then
 		return nil
 	end
-	if code == "working" and kind and kind ~= "cargo" then
+	if code == "working" and kind and kind ~= "cargo" and kind ~= "supply" then
 		return { key = "ctron_status.job_type_" .. kind, sev = c[2] }
 	end
 	return { key = c[1], sev = c[2] }

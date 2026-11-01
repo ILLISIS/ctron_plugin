@@ -31,7 +31,7 @@ test("controller wiring: every handler present; the schedulable set reaches runn
 	try {
 		const want = Object.values(m).filter((C: any) => C.src === "instance" && C.dst === "controller")
 			.map((C: any) => C.name);
-		assert.equal(want.length, 11);
+		assert.equal(want.length, 14);
 		assert.deepEqual(want.filter(n => !handlers.has(n)), []);
 		const states = () => sent.filter(([, msg]) => msg.constructor.name === "SettingsStateEvent")
 			.map(([to, msg]) => [to, msg.payload.surfaces]);
@@ -45,6 +45,19 @@ test("controller wiring: every handler present; the schedulable set reaches runn
 		await handlers.get("UiCargoEvent")(new m.UiCargoEvent({ sid: "1.1", slots: {}, name: "x" }), { id: 2 });
 		await handlers.get("UiCargoEvent")(new m.UiCargoEvent({ sid: "9.9", name: "y" }), { id: 2 });
 		assert.deepEqual(edits().map(([to, msg]) => [to, msg.payload]), [[1, { sid: "1.1", slots: [], name: "x" }]]);
+		// a call: its tile hears "waiting", again on a second press (the panel showed it); a cancel closes it
+		const supply = () => sent.filter(([, msg]) => msg.constructor.name === "SupplyStateEvent")
+			.map(([to, msg]) => [to, msg.payload]);
+		const call = new m.SupplyCallEvent({
+			player: "ann", surface: "nauvis", x: 5, y: 5, items: [["iron-plate", "normal", 10, 100]], trash: 0,
+		});
+		await handlers.get("SupplyCallEvent")(call, { id: 1 });
+		await handlers.get("SupplyCallEvent")(call, { id: 1 });
+		await handlers.get("SupplyCancelEvent")(new m.SupplyCancelEvent({ player: "ann" }), { id: 1 });
+		assert.deepEqual(supply(), [
+			[1, { player: "ann", st: "waiting" }], [1, { player: "ann", st: "waiting" }],
+			[1, { player: "ann", st: "none", why: "cancelled" }],
+		]);
 		controller.instances.get(1).status = "stopped";
 		for (const fn of hooks.status) { await fn(controller.instances.get(1), "running"); }
 		assert.deepEqual(states().at(-1), [2, []], "tile 1 stopped: its station was the last on nauvis");

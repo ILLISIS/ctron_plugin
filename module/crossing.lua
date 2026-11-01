@@ -38,6 +38,9 @@ function crossing.capture(ep, v)
 		data.tick = game.tick
 		data.travel = ct.travel.export(v)
 	end
+	if run and run.supply then
+		ct.supply.drop_proxy(run.supply.player) -- a follower stepped over the line: its robots can't follow it
+	end
 	-- The flags go last: a raise above leaves the source untouched instead of a run dropped at commit with no body.
 	if run then
 		run.in_transit = true

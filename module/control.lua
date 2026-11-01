@@ -27,12 +27,13 @@ ct.combat = require("modules/ctron_pluginv2/combat")
 ct.crossing = require("modules/ctron_pluginv2/crossing")
 ct.travel = require("modules/ctron_pluginv2/travel")
 ct.portals = require("modules/ctron_pluginv2/portals")
+ct.supply = require("modules/ctron_pluginv2/supply")
 ct.report = require("modules/ctron_pluginv2/report")
 ct.gui = require("modules/ctron_pluginv2/gui/gui")
 --- The fixed order (R-106): for each event, one handler calls the modules' handlers in this order.
 local ORDER = {
 	ct.settings, ct.registry, ct.discovery, ct.logistics, ct.signals, ct.tools, ct.runs, ct.combat, ct.crossing,
-	ct.travel, ct.portals, ct.report, ct.gui,
+	ct.travel, ct.portals, ct.supply, ct.report, ct.gui,
 }
 
 -- CC's repair filters (CC script/entity_processor.lua:194-202) plus "not a unit" (R-23). event_handler registers every

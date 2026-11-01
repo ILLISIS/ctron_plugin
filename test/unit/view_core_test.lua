@@ -285,7 +285,7 @@ local function mirror()
 			state = "idle", x = 1, y = 2 },
 		["s:7.5"] = { key = "s:7.5", sec = "stations", ord = 1, at = 7, atName = "t7", name = "Mall", x = 5, y = 6 },
 		["n:7.5"] = { key = "n:7.5", sec = "stations", ord = 1, sid = "7.5", slots = { { "pipe", "normal", 100, 500, 42, 100 } },
-			order = { { "pipe", "normal", 458 } }, why = "no_supplier" },
+			order = { 458 }, why = "no_supplier" },
 		["w:8|nauvis|upgrade|4"] = { key = "w:8|nauvis|upgrade|4", sec = "attention", ord = 3, kind = "upgrade", owner = 8,
 			ownerName = "tile-8", c = { 1, 2 }, st = "backoff", why = "no_progress", rem = 1, committed = 0,
 			firstSeenMs = 0, tool = false },
@@ -532,7 +532,7 @@ t.test("screen: seeded fuzz, the incremental screen and its diffs equal a full r
 				x = R(9), y = R(9) }
 		end
 		return { key = key, sec = "stations", ord = 1, sid = id, why = pick({ "no_supplier", nil }),
-			slots = { { "pipe", "normal", R(9), R(9), R(9), R(9) } }, order = { { "pipe", "normal", R(9) } } }
+			slots = { { "pipe", "normal", R(9), R(9), R(9), R(9) } }, order = { R(9) } }
 	end
 	local KEYS = {}
 	for i = 1, 6 do

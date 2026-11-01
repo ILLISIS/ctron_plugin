@@ -1,8 +1,10 @@
-/* eslint-disable max-len, no-plusplus */ // the brief's fixtures are one-line records
+/* eslint-disable @stylistic/max-len, no-plusplus */ // the brief's fixtures are one-line records
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Index, MOVING_MS, totalsKey } from "../../cluster/index.js";
-import { COST_K, DEBOUNCE_MS, Scheduler, type Outbound, type SchedulerPort } from "../../cluster/scheduler.js";
+import {
+	COST_K, DEBOUNCE_MS, MERGE_WAIT_MS, Scheduler, type Outbound, type SchedulerPort,
+} from "../../cluster/scheduler.js";
 import type { Place } from "../../cluster/routes.js";
 
 type Q = Parameters<SchedulerPort["query"]>[1];
@@ -705,4 +707,96 @@ test("a minion's short re-picks from its own station toward the leader's, goes t
 	await settle();
 	await settle();
 	assert.equal(h.queries.at(-1)![1][0].exclude_sid, "1.b", "the second re-pick starts from the station it was sent to");
+});
+
+// Player supply (owner, SP-24): calls go first; the station nearest the player with the items; the cheapest ctron to it.
+const call = (extra: Record<string, unknown> = {}) => ({
+	player: "ann", surface: "nauvis", x: 300, y: 0, items: [["iron-plate", "normal", 100, 100]], trash: 1, ...extra,
+}) as any;
+
+test("supply: a call takes the idle ctron before an older cell; station nearest the player with the items", async () => {
+	const h = harness({
+		reply: (inst, q) => ({ r: q.map(e => ({ qid: e.qid, sids: e.qid.startsWith("c:") ? ["1.8"] : ["1.9"], cover: true })) }),
+	});
+	tile(h.ix, 1, {
+		ctrons: [ctron("1.1", 280, 0)], stations: [station("1.9", 290, 0), station("1.8", 200, 0)],
+		cells: [cell("1|nauvis|construction|1", 40, 40)],
+	});
+	h.ix.call(1, call(), T0);
+	await h.s.pass("nauvis");
+	const a = h.assigns();
+	assert.equal(a.length, 1, "one ctron: the call has it, the cell waits");
+	assert.equal(a[0].kind, "supply");
+	assert.equal(a[0].station.sid, "1.8", "1.9 is nearer but lacks the iron");
+	assert.deepEqual(a[0].supply, {
+		player: "ann", items: [["iron-plate", "normal", 100, 100]], trash: 1, place: { inst: 1, x: 300, y: 0 },
+	});
+	assert.equal(h.ix.calls.get("ann")!.jid, a[0].jid);
+	assert.ok(h.ix.busyCids().has("1.1"));
+});
+
+test("supply: nothing in stock with trash fetches the trash alone; with no trash the call ends no_stock", async () => {
+	const h = harness({ reply: () => ({ r: [] }) });
+	tile(h.ix, 1, { ctrons: [ctron("1.1")], stations: [station("1.9")] });
+	h.ix.call(1, call(), T0);
+	await h.s.pass("nauvis");
+	assert.deepEqual(h.assigns()[0].supply.items, [], "the nearest station, for the trash");
+	const none = harness({ reply: () => ({ r: [] }) });
+	tile(none.ix, 1, { ctrons: [ctron("1.1")], stations: [station("1.9")] });
+	none.ix.call(1, call({ trash: 0 }), T0);
+	await none.s.pass("nauvis");
+	assert.equal(none.assigns().length, 0);
+	assert.deepEqual(none.ix.supplyState("ann"), { player: "ann", st: "none", why: "no_stock" });
+});
+
+test("supply: no idle ctron, the call waits; a cancel then sends the job home and tells the player's tile", async () => {
+	const h = harness();
+	tile(h.ix, 1, { ctrons: [ctron("1.1", 0, 0, { state: "busy" })], stations: [station("1.9")] });
+	h.ix.call(1, call(), T0);
+	await h.s.pass("nauvis");
+	assert.equal(h.assigns().length, 0);
+	assert.equal(h.ix.supplyState("ann").st, "waiting");
+	h.ix.delta(1, { ctrons: { up: [ctron("1.1")], rm: [] } } as any, T0);
+	await h.s.pass("nauvis");
+	const jid = h.assigns()[0].jid;
+	h.s.cancelCall("ann", "died");
+	assert.ok(h.sent.some(([inst, m]) => inst === 1 && m.type === "cancel" && (m.payload as any).jid === jid));
+	assert.deepEqual(h.sent.filter(([, m]) => m.type === "supplyState").map(([, m]) => m.payload).at(-1),
+		{ player: "ann", st: "none", why: "died" });
+	assert.equal(h.ix.calls.has("ann"), false);
+});
+
+// The owner's "lots of spiders show up to a small job": a job's cells finish their scans seconds apart.
+test("merge wait: a ready cell waits for a neighbour still scanning, then both go to one ctron", async () => {
+	const h = harness();
+	const A = "1|nauvis|construction|312512500"; // chunk (0, 0)
+	const B = "1|nauvis|construction|312537500"; // chunk (1, 0), its neighbour
+	tile(h.ix, 1, { ctrons: [ctron("1.1"), ctron("1.2")], stations: [station("1.9")], cells: [cell(A, 40, 40)] }, T0);
+	h.ix.delta(1, { cells: { up: [{ wid: B, surface: "nauvis", kind: "construction", since: 0, due: 0, tool: false }],
+		rm: [] } } as any, T0); // first dirty, its scan running: no totals yet
+	await h.s.pass("nauvis");
+	assert.equal(h.assigns().length, 0, "A waits for B");
+	assert.ok(h.timers.some(t => t.at === T0 + MERGE_WAIT_MS), "a pass comes back when the wait runs out");
+	h.ix.delta(1, { cells: { up: [cell(B, 120, 40)], rm: [] } } as any, T0 + 2000);
+	await h.s.pass("nauvis");
+	assert.deepEqual(h.assigns().map(a => a.work.map((w: any) => w.wid)), [[A, B]], "one job, one ctron");
+});
+
+test("merge wait: no wait past MERGE_WAIT_MS, for a far cell, another kind, or in horde mode", async () => {
+	const A = "1|nauvis|construction|312512500";
+	const pending = (wid: string, kind = "construction") => ({ cells: { up: [{ wid, surface: "nauvis", kind, since: 0,
+		due: 300, tool: false }], rm: [] } }) as any;
+	const cases: Array<[string, any, (h: ReturnType<typeof harness>) => void]> = [
+		["the wait ran out", {}, h => { h.ix.delta(1, pending("1|nauvis|construction|312537500"), T0); h.clock.now += MERGE_WAIT_MS; }],
+		["4 chunks away", {}, h => h.ix.delta(1, pending("1|nauvis|construction|312612500"), T0)],
+		["deconstruction", {}, h => h.ix.delta(1, pending("1|nauvis|deconstruction|312537500", "deconstruction"), T0)],
+		["horde", { horde: true }, h => h.ix.delta(1, pending("1|nauvis|construction|312537500"), T0)],
+	];
+	for (const [name, opts, add] of cases) {
+		const h = harness(opts);
+		tile(h.ix, 1, { ctrons: [ctron("1.1")], stations: [station("1.9")], cells: [cell(A, 40, 40)] }, T0);
+		add(h);
+		await h.s.pass("nauvis");
+		assert.equal(h.assigns().length, 1, name);
+	}
 });

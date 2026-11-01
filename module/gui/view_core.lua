@@ -12,6 +12,7 @@ view.COLORS = {
 	repair = { r = 90 / 255, g = 0, b = 45 / 255, a = 0.5 },
 	destroy = { r = 0, g = 0, b = 0, a = 0.6 },
 	cargo = { r = 0.55, g = 0.55, b = 0.55, a = 0.75 },
+	supply = { r = 1, g = 0.5, b = 0, a = 0.4 },
 }
 
 --- Severity → status icon (spec §8.7).
@@ -54,7 +55,8 @@ function view.chip(kind)
 	if not color then
 		return nil
 	end
-	return { caption = { "ctron_gui_locale.job_card_" .. kind .. "_name" }, color = color }
+	local key = kind == "supply" and "ctronv2.job_card_supply_name" or "ctron_gui_locale.job_card_" .. kind .. "_name"
+	return { caption = { key }, color = color }
 end
 
 --- A status code (spec §8.7) → {sprite, caption, sev}. status_core names the kind for "working" (CC's
@@ -496,15 +498,28 @@ local function ctron_vm(r, opts)
 	}
 end
 
+--- A need row's order (a count per slot, R-166) → [[name, quality, count]] of the slots it orders.
+local function order_items(need)
+	local out = {}
+	for i, s in ipairs(need.slots or {}) do
+		local n = need.order[i]
+		if n and n > 0 then
+			out[#out + 1] = { s[1], s[2], n }
+		end
+	end
+	return out
+end
+
 local function station_vm(r, need, opts)
 	local here = view.is_local(r, opts.here)
 	-- A pending cargo order shows on its destination's need row, not as a job (R-156): no_supplier as the status,
 	-- the order's items in the tooltip.
 	local st = need and need.why and view.status(need.why)
+	local order = need and need.order and order_items(need) or {}
 	return {
 		type = "station", id = string.sub(r.key, 3), chip = name_chip(r.name), who = "", tile = view.tile(r, opts.here),
 		sprite = st and st.sprite, status = st and st.caption,
-		tip = need and need.order and #need.order > 0 and view.items_text(need.order) or nil,
+		tip = #order > 0 and view.items_text(order) or nil,
 		icons = view.request_buttons(need and need.slots), pos = { x = r.x, y = r.y }, locate = here,
 		cargo = here or opts.link_up and true or false, -- a remote edit goes through the controller (R-192)
 		remote_tip = remote_tip(r, opts.here),

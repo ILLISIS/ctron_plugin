@@ -79,6 +79,11 @@ export const UP_SAMPLES: Payloads<typeof UP> = {
 	"ct.ui.cargo": { sid: "1.17", slots: {}, name: "Mall" }, // Lua sends an empty list as {}
 	"ct.ui.detail.ask": { req: "c7e5.4", jid: "b007.3" },
 	"ct.settings.set": { surface: "*", patch: { robot_count: 60, kinds: { destroy: true } } },
+	"ct.supply.call": {
+		player: "ann", surface: "nauvis", x: 12.5, y: -3, items: [["iron-plate", "normal", 100, 100]], trash: 2,
+	},
+	"ct.supply.cancel": { player: "ann", why: "died" },
+	"ct.supply.at": { player: "ann" }, // left this tile
 };
 
 const JOB_ROW = {
@@ -139,6 +144,8 @@ export const DOWN_SAMPLES: Payloads<typeof DOWN> = {
 	},
 	"ct.ui.link": { up: false },
 	"ct.settings": { overrides: { "*": { job_start_delay: 600 }, "nauvis": { minions: 2 } }, surfaces: ["nauvis"] },
+	"ct.supply.state": { player: "ann", st: "none", why: "done" },
+	"ct.supply.place": { jid: "b007.3", inst: 2, x: 512.5, y: -3 },
 };
 
 // The largest records (spec §14.2, R-155): 19-character ids, 40-character item names, legendary quality, counts of
@@ -185,6 +192,10 @@ export const MAX = {
 		...job, kind: "cargo" as const, shares: [], tasks: [0, 0] as [number, number],
 		cargo: { dest: stationRef, items: bigs(30).map(([n, q, c]) => [n, q, c] as [string, string, number]) },
 	},
+	/** A supply job. */
+	supplyJob: {
+		...job, kind: "supply" as const, shares: [], tasks: [0, 0] as [number, number], supply: { player: NAME },
+	},
 	/** A destroy job at CC's minion cap: 101 runs. */
 	destroyJob: {
 		...job, kind: "destroy" as const, members: Array.from({ length: 101 }, () => ID),
@@ -212,6 +223,9 @@ export const MAX_UP = {
 	"ct.ui.drop": { jid: ID, surface: SURFACE, name: NAME, quality: "legendary" },
 	"ct.ui.cargo": { sid: ID, slots: Array.from({ length: 30 }, (_, i) => slot(i).slice(0, 4) as Big), name: TEXT },
 	"ct.ui.detail.ask": { req: "ffffffff.4294967295", jid: ID },
+	"ct.supply.call": { player: NAME, surface: SURFACE, ...XY, items: bigs(30), trash: 99999 },
+	"ct.supply.cancel": { player: NAME, why: "no_stations" },
+	"ct.supply.at": { player: NAME, surface: SURFACE, ...XY },
 	"ct.settings.set": {
 		surface: SURFACE, patch: {
 			job_start_delay: 99999, debug: true, horde: true, zone_restriction: true,
@@ -241,6 +255,11 @@ export const MAX_DOWN = {
 	/** A squad update naming 100 gone minions. */
 	squad100: {
 		jid: ID, lead: { inst: 1234567890, ...XY }, gone: Array.from({ length: 100 }, () => ID), done: true,
+	},
+	/** A supply assign of 30 kinds. */
+	assignSupply30: {
+		jid: ID, kind: "supply" as const, surface: SURFACE, station: stationRef, members: [ID], work: [] as never[],
+		supply: { player: NAME, items: bigs(30), trash: 99999, place: { inst: 1234567890, ...XY } },
 	},
 	assign30: {
 		jid: ID, kind: "deconstruction" as const, surface: SURFACE, station: stationRef, members: [ID],

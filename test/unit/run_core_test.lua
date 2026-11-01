@@ -774,3 +774,119 @@ t.test("follow: a failed walk to the leader waits for the next poll", function()
 	local acts = rc.step(run, facts({ tick = 1230 }), CFG, { type = "failed", reason = "no_path" })
 	t.expect_same(acts, {}); t.expect_eq(run.next, 1290); t.expect_eq(run.state, "follow")
 end)
+
+-- Supply (SP-24): load, find the player, hand over through proxies, go home.
+local SUPPLY = { jid = "b.3", kind = "supply", surface = "nauvis", station = ST1, members = { "1.10" }, work = {},
+	supply = { player = "ann", items = { { "iron-plate", "normal", 100, 100 } }, trash = 2,
+		place = { inst = 1, x = 40, y = 0 } } }
+local PLAN = { n = 2, sig = "a", inserts = {}, takes = {} }
+local function supply_run()
+	local run = rc.new(SUPPLY, 1, { tick = 1, radius = 10, unit = 10, profile = { ["construction-robot"] = { normal = 50 } } })
+	rc.start(run, facts(), CFG)
+	rc.step(run, facts(), CFG, { type = "arrived" })
+	return run
+end
+local function near(over)
+	local f = { player = { pos = { x = 5, y = 0 }, dist = 5 }, proxy = false, supply_plan = PLAN }
+	for k, v in pairs(over or {}) do f[k] = v end
+	return facts(f)
+end
+
+t.test("new: a supply run knows its player and their place, and loads their items with the profile", function()
+	local run = rc.new(SUPPLY, 1, { tick = 1, radius = 10, unit = 10, profile = { ["construction-robot"] = { normal = 50 } } })
+	t.expect_same(run.supply, { player = "ann", place = { inst = 1, x = 40, y = 0 } })
+	t.expect_same(run.load, { ["iron-plate"] = { normal = 100 }, ["construction-robot"] = { normal = 50 } })
+	t.expect_eq(#run.tasks, 0)
+end)
+
+t.test("supply loading: loaded goes to the player; short and not in stock goes anyway, with no short event", function()
+	local run = supply_run()
+	local acts = rc.step(run, near({ tick = 1120, fulfilled = true }), CFG)
+	t.expect_eq(run.state, "at_player", "the player stands near: straight to handing over")
+	t.expect_same(ops(acts), { "requests", "balance_ammo", "stop", "proxy", "follow_player" })
+	run = supply_run()
+	acts = rc.step(run, facts({ tick = 1000 + rc.WAIT, missing = { ["iron-plate"] = { normal = 40 } },
+		covers_missing = false }), CFG)
+	t.expect_eq(run.state, "to_player"); t.expect_eq(op(acts, "emit"), nil)
+	t.expect_eq(run.status, "waiting_player", "the place is this tile but the player isn't here: it waits")
+	run = supply_run()
+	rc.step(run, facts({ tick = 1000 + rc.WAIT, missing = { ["iron-plate"] = { normal = 40 } } }), CFG)
+	t.expect_eq(run.state, "loading", "the network has some: it waits for the robots, as any run")
+end)
+
+t.test("to_player: a local player is chased, the leg re-aimed only once they moved MOVED from its goal", function()
+	local run = supply_run()
+	local acts = rc.step(run, facts({ tick = 1120, fulfilled = true, player = { pos = { x = 100, y = 0 }, dist = 100 } }), CFG)
+	t.expect_eq(run.state, "to_player"); t.expect_eq(run.status, "moving")
+	t.expect_same(op(acts, "travel"), { "travel", { inst = 1, x = 100, y = 0 }, { kind = "follow", radius = 6 } })
+	acts = rc.step(run, facts({ tick = 1180, player = { pos = { x = 110, y = 0 }, dist = 90 } }), CFG)
+	t.expect_eq(op(acts, "travel"), nil, "10 tiles: the leg stands")
+	acts = rc.step(run, facts({ tick = 1240, player = { pos = { x = 120, y = 0 }, dist = 80 } }), CFG)
+	t.expect_same(op(acts, "travel")[2], { inst = 1, x = 120, y = 0 })
+	acts = rc.step(run, near({ tick = 1300 }), CFG)
+	t.expect_eq(run.state, "at_player"); t.expect_eq(run.status, "supplying"); t.expect_eq(run.arg, "ann")
+	t.expect_true(op(acts, "proxy"), "the first proxy at once")
+end)
+
+t.test("to_player: a place on another tile is travelled to once; a place here without the player waits", function()
+	local run = supply_run()
+	run.supply.place = { inst = 2, x = 500, y = 0 }
+	local acts = rc.step(run, facts({ tick = 1120, fulfilled = true }), CFG)
+	t.expect_same(op(acts, "travel")[2], { inst = 2, x = 500, y = 0 })
+	t.expect_eq(op(rc.step(run, facts({ tick = 1180 }), CFG), "travel"), nil, "the same place: no new leg")
+	run.supply.place = { inst = 1, x = 40, y = 0 }
+	acts = rc.step(run, facts({ tick = 1240 }), CFG)
+	t.expect_true(op(acts, "stop")); t.expect_eq(run.status, "waiting_player"); t.expect_eq(run.arg, "ann")
+	t.expect_eq(run.next, 1300)
+	acts = rc.step(run, facts({ tick = 1300 }), CFG, { type = "failed", reason = "no_route" })
+	t.expect_same(acts, {}); t.expect_eq(run.next, 1600, "a failed leg is tried again later")
+end)
+
+t.test("at_player: one proxy at a time; home when nothing is left, robots are gone or the plan stops moving", function()
+	local run = supply_run()
+	rc.step(run, near({ tick = 1120, fulfilled = true }), CFG)
+	t.expect_eq(op(rc.step(run, near({ tick = 1180, proxy = true }), CFG), "proxy"), nil, "the last proxy still works")
+	local acts = rc.step(run, near({ tick = 1240, supply_plan = { n = 1, sig = "b" } }), CFG)
+	t.expect_true(op(acts, "proxy")); t.expect_eq(run.supply.rounds, 2)
+	acts = rc.step(run, near({ tick = 1300, supply_plan = { n = 0, sig = "" }, out = 3 }), CFG)
+	t.expect_eq(run.state, "at_player", "its robots still bring the trash back: it waits for them")
+	t.expect_eq(op(acts, "proxy"), nil); t.expect_eq(run.next, 1360)
+	acts = rc.step(run, near({ tick = 1360, supply_plan = { n = 0, sig = "" } }), CFG)
+	t.expect_eq(run.state, "returning")
+	t.expect_same(ops(acts), { "stop", "drop_proxy", "travel" }, "home, and no proxy left on the player")
+	run = supply_run()
+	rc.step(run, near({ tick = 1120, fulfilled = true }), CFG)
+	rc.step(run, near({ tick = 1180, robots = 0 }), CFG)
+	t.expect_eq(run.state, "returning", "no robots to hand over with")
+	run = supply_run()
+	rc.step(run, near({ tick = 1120, fulfilled = true }), CFG) -- sig "a", same 0
+	for i = 1, rc.SAME - 1 do
+		t.expect_true(op(rc.step(run, near({ tick = 1120 + 60 * i }), CFG), "proxy"), "retry " .. i)
+	end
+	rc.step(run, near({ tick = 1120 + 60 * rc.SAME }), CFG)
+	t.expect_eq(run.state, "returning", "the same plan " .. rc.SAME .. " times in a row")
+end)
+
+t.test("at_player: a player past FAR, or gone, is chased or waited for", function()
+	local run = supply_run()
+	rc.step(run, near({ tick = 1120, fulfilled = true }), CFG)
+	rc.step(run, facts({ tick = 1180, player = { pos = { x = 60, y = 0 }, dist = 60 } }), CFG)
+	t.expect_eq(run.state, "to_player"); t.expect_eq(run.status, "moving")
+	rc.step(run, near({ tick = 1240 }), CFG)
+	t.expect_eq(run.state, "at_player")
+	rc.step(run, facts({ tick = 1300 }), CFG)
+	t.expect_eq(run.state, "to_player"); t.expect_eq(run.status, "waiting_player", "their place is this tile: wait")
+end)
+
+t.test("player_left drops the proxy and waits for a place; cancel drops it and goes home", function()
+	local run = supply_run()
+	rc.step(run, near({ tick = 1120, fulfilled = true }), CFG)
+	local acts = rc.step(run, facts({ tick = 1150 }), CFG, { type = "player_left" })
+	t.expect_same(ops(acts), { "drop_proxy", "stop" })
+	t.expect_eq(run.state, "to_player"); t.expect_eq(run.supply.place, nil); t.expect_eq(run.status, "waiting_player")
+	run.supply.place = { inst = 2, x = 500, y = 0 }
+	t.expect_same(op(rc.step(run, facts({ tick = 1210 }), CFG), "travel")[2], { inst = 2, x = 500, y = 0 })
+	acts = rc.step(run, facts({ tick = 1220 }), CFG, { type = "cancel" })
+	t.expect_eq(run.state, "returning"); t.expect_true(op(acts, "drop_proxy")); t.expect_true(op(acts, "stop"))
+	t.expect_same(rc.step(supply_run(), facts(), CFG, { type = "player_left" }), {}, "loading: nothing to drop")
+end)

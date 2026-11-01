@@ -230,6 +230,24 @@ FACT.leader = function(f, c)
 		crossing = ct.travel.status(lead.unit) == "crossing" }
 end
 FACT.combat = function(f, c) return ct.combat.facts(c.run, c.entity, c.cfg, f) end
+-- Supply: the player's character on this tile and the run's surface, with how far it is.
+FACT.player = function(f, c)
+	local char = c.run.supply and ct.supply.character(c.run.supply.player)
+	if not (char and char.surface.name == c.run.surface) then
+		return false
+	end
+	local p, q = char.position, f.pos
+	return { entity = char, pos = { x = p.x, y = p.y }, dist = math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2) }
+end
+FACT.proxy = function(f) return f.player and f.player.entity.item_request_proxy ~= nil or false end
+-- What the trunk holds beyond the robots and ammo the ctron keeps, of what the player misses, as a proxy plan.
+FACT.supply_plan = function(f, c)
+	local held = {}
+	for _, it in ipairs(inv(c.entity, defines.inventory.spider_trunk).get_contents()) do
+		items.add(held, it.name, it.quality, it.count)
+	end
+	return ct.supply.plan(f.player.entity, held, items.full("normal", c.cfg))
+end
 
 -- The effect executor.
 local APPLY = {}
@@ -398,6 +416,19 @@ end
 APPLY.roboports = function(_, entity, a) runs.set_roboports(entity, a[2]) end
 APPLY.moving_logistics = function(_, entity, a) entity.enable_logistics_while_moving = a[2] end
 APPLY.release = release
+APPLY.follow_player = function(run, entity)
+	local char = ct.supply.character(run.supply.player)
+	if char and entity.follow_target ~= char then
+		entity.follow_target = char
+	end
+end
+APPLY.proxy = function(run, entity, a)
+	local char = ct.supply.character(run.supply.player)
+	if char then
+		ct.supply.make_proxy(char, entity.force, a[2])
+	end
+end
+APPLY.drop_proxy = function(run) ct.supply.drop_proxy(run.supply.player) end
 for _, op in ipairs({ "move", "evade", "nuke", "follow", "leader_repair" }) do
 	APPLY[op] = function(run, entity, a) ct.combat.apply(run, entity, a) end
 end
@@ -495,7 +526,8 @@ function runs.adopt(msg)
 		end
 	end
 	local stacks = ct.settings.stacks
-	local need = items.slots(items.map(msg.cargo and msg.cargo.items), stacks)
+	local carried = msg.cargo or msg.supply
+	local need = items.slots(items.map(carried and carried.items), stacks) + (msg.supply and msg.supply.trash or 0)
 	for _, share in ipairs(msg.work) do
 		need = need + items.slots(items.map(share.bring), stacks) + share.out
 	end
@@ -564,6 +596,9 @@ local function gone(cid, run)
 	end
 	ct.report.event(run.jid, "lost", fields)
 	runs.trace("ctronv2.job", "lost", "warn", run.jid, cid)
+	if run.supply then
+		ct.supply.drop_proxy(run.supply.player)
+	end
 	if run.squad then
 		for _, other in pairs(S().runs) do
 			if other.jid == run.jid and not other.in_transit and other.state ~= "ended" then
@@ -621,7 +656,7 @@ local function record_of(jid, list)
 	local rec = { jid = jid, kind = any.kind, surface = any.surface, members = members, state = any.state,
 		status = any.status, arg = type(any.arg) ~= "table" and any.arg or nil,
 		tasks = { any.done_tasks, any.total_tasks }, station = any.station, shares = shares, left = any.left,
-		cargo = any.cargo }
+		cargo = any.cargo, supply = any.supply and { player = any.supply.player } }
 	if not head and any.squad then
 		rec.lead = any.squad.leader -- R-209: a part without the leader names it, so a restarted controller knows it
 	end
@@ -869,6 +904,35 @@ function runs.drop(jid, surface, name, quality)
 		unknown(jid)
 	end
 end
+
+--- The player of these supply runs left this tile (supply.lua, on_pre_player_left_game): proxies go at once.
+function runs.player_left(name)
+	for _, run in pairs(S().runs) do
+		if run.supply and run.supply.player == name and not run.in_transit and run.state ~= "ended" then
+			step(run, { type = "player_left" })
+		end
+	end
+end
+
+--- Where a supply job's player is now (the controller, on their moves between tiles): a run looking for them goes there.
+bridge.on("ct.supply.place", function(p)
+	local transit
+	for _, run in pairs(S().runs) do
+		if run.jid == p.jid and run.supply and run.state ~= "ended" then
+			if run.in_transit then
+				transit = true
+			else
+				run.supply.place = { inst = p.inst, x = p.x, y = p.y }
+				if run.state == "to_player" then
+					step(run)
+				end
+			end
+		end
+	end
+	if transit then
+		unknown(p.jid)
+	end
+end)
 
 bridge.on("ct.job.cancel", function(p) runs.cancel(p.jid) end)
 bridge.on("ct.job.station", function(p) runs.set_station(p.jid, p.cid, p.station) end)

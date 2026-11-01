@@ -10,8 +10,9 @@ import { list, type StockQ } from "./contracts.js";
 import {
 	JobAssignEvent, JobCancelEvent, JobDetailFetchRequest, JobDetailRequest, JobDropEvent, JobEventEvent,
 	JobSquadEvent, JobStationEvent, PortalReportEvent, RouteRequest, SettingsSetEvent, SettingsStateEvent,
-	StationSetEvent, StockQueryRequest, TileDeltaEvent, TileSnapshotEvent, UiCancelEvent, UiCargoEvent, UiDropEvent,
-	UiListEvent, UiWatchEvent, WorkClearEvent,
+	StationSetEvent, StockQueryRequest, SupplyAtEvent, SupplyCallEvent, SupplyCancelEvent, SupplyPlaceEvent,
+	SupplyStateEvent, TileDeltaEvent, TileSnapshotEvent, UiCancelEvent, UiCargoEvent, UiDropEvent, UiListEvent,
+	UiWatchEvent, WorkClearEvent,
 } from "./messages.js";
 import { DESTROY_RETRY_MS, Index, ownerOf } from "./cluster/index.js";
 import { chunk, jobRow, Lists } from "./cluster/list.js";
@@ -78,6 +79,8 @@ export default async function loadControllerPlugin(context: ControllerPluginCont
 			case "squad": post(inst, new JobSquadEvent(msg.payload)); break;
 			case "drop": post(inst, new JobDropEvent(msg.payload)); break;
 			case "clear": post(inst, new WorkClearEvent(msg.payload)); break;
+			case "supplyState": post(inst, new SupplyStateEvent(msg.payload)); break;
+			case "supplyPlace": post(inst, new SupplyPlaceEvent(msg.payload)); break;
 			default: break;
 		}
 	}
@@ -168,6 +171,28 @@ export default async function loadControllerPlugin(context: ControllerPluginCont
 			lifecycle(logger, "ctronv2.job", ev, { jid, cid, why, inst: src.id }, QUIET.has(ev) ? "verbose" : "info");
 		}
 		afterReport(surface && FREED.has(ev) ? [surface] : []);
+	});
+
+	// Player supply: a call, a cancel (the panel, or a death), and where each player is.
+	controller.handle(SupplyCallEvent, async (event: SupplyCallEvent, src: Address) => {
+		const p = event.payload;
+		if (index.call(src.id, p, Date.now())) {
+			lifecycle(logger, "ctronv2.supply", "call", {
+				player: p.player, inst: src.id, items: list(p.items).length, trash: p.trash,
+			});
+			scheduler.trigger(p.surface);
+		}
+		scheduler.flushSupply();
+	});
+	controller.handle(SupplyCancelEvent, async (event: SupplyCancelEvent) => {
+		const { player, why } = event.payload;
+		lifecycle(logger, "ctronv2.supply", "cancel", { player, why });
+		scheduler.cancelCall(player, why ?? "cancelled");
+		schedulePush();
+	});
+	controller.handle(SupplyAtEvent, async (event: SupplyAtEvent, src: Address) => {
+		index.playerAt(src.id, event.payload);
+		scheduler.flushSupply();
 	});
 
 	controller.handle(PortalReportEvent, async (event: PortalReportEvent, src: Address) => {
@@ -274,10 +299,15 @@ export default async function loadControllerPlugin(context: ControllerPluginCont
 		for (const [jid, cid] of r.lost) {
 			lifecycle(logger, "ctronv2.job", "lost", { jid, cid, reason: "unreported" });
 		}
+		for (const player of r.offline) {
+			lifecycle(logger, "ctronv2.supply", "cancel", { player, why: "offline" });
+			scheduler.cancelCall(player, "offline");
+		}
 		if (r.expired.length || r.lost.length) {
 			scheduler.flushSquad(); // R-209 relays queued by the tick: no tile report need follow
 			scheduler.tick();
 		}
+		scheduler.flushSupply(); // a call reopened by the tick shows as waiting again
 		pushLists();
 	}), TICK_MS);
 	const slow = setInterval(guarded("scheduler tick", () => scheduler.tick()), TIMER_MS); // R-51
