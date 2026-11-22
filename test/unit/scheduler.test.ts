@@ -427,6 +427,25 @@ test("short re-picks with the current station excluded and goes to the tile hold
 	assert.deepEqual(no.sent, []);
 });
 
+test("short with an any-quality line queries only the real items, so the station holding all of them outranks one holding one (#13)", async () => {
+	// the tile answers like core.cover: an "any" item is never covered, so it keeps `all` empty
+	const h = harness({ reply: (inst, q) => ({ r: inst !== 1 ? [] : q.flatMap(e => {
+		const real = e.items.map((it, i) => (it[1] === "any" ? 0 : i + 1)).filter(Boolean);
+		return [{ qid: e.qid, sids: ["1.near"], cover: [1] },
+			{ qid: e.qid, sids: ["1.far"], cover: real.length === e.items.length ? true : real }];
+	}) }) });
+	tile(h.ix, 1, { stations: [station("1.a", 0, 0), station("1.near", 10, 0), station("1.far", 100, 0)] });
+	h.ix.assign({ jid: "j1", kind: "construction", surface: "nauvis", at: 1, members: ["1.1"], shares: [],
+		station: { sid: "1.a", inst: 1, x: 0, y: 0 }, sizedFrom: new Map() }, T0);
+	h.ix.jobEvent(1, { jid: "j1", ev: "short", tick: 1, cid: "1.1",
+		missing: [["gear", "normal", 5], ["rocket", "normal", 1], ["pipe", "any", 2]] } as any, T0);
+	h.s.afterReport();
+	await settle();
+	await settle();
+	assert.deepEqual((h.queries[0][1] as any)[0].items, [["gear", "normal", 5], ["rocket", "normal", 1]]);
+	assert.equal((h.sent[0][1] as any).payload.station.sid, "1.far");
+});
+
 test("trash_full asks in drop mode and picks the nearest accepting station (§6.5)", async () => {
 	const h = harness({ reply: (inst, q) => ({ r: q.map(e => ({ qid: e.qid, sids: [inst === 1 ? "1.far" : "2.near"], cover: true })) }) });
 	tile(h.ix, 1, { stations: [station("1.a", 0, 0), station("1.far", 900, 0)] });
@@ -716,7 +735,7 @@ const call = (extra: Record<string, unknown> = {}) => ({
 
 test("supply: a call takes the idle ctron before an older cell; station nearest the player with the items", async () => {
 	const h = harness({
-		reply: (inst, q) => ({ r: q.map(e => ({ qid: e.qid, sids: e.qid.startsWith("c:") ? ["1.8"] : ["1.9"], cover: true })) }),
+		reply: (inst, q) => ({ r: q.map(e => ({ qid: e.qid, sids: /^[cp]:/.test(e.qid) ? ["1.8"] : ["1.9"], cover: true })) }),
 	});
 	tile(h.ix, 1, {
 		ctrons: [ctron("1.1", 280, 0)], stations: [station("1.9", 290, 0), station("1.8", 200, 0)],
@@ -733,6 +752,64 @@ test("supply: a call takes the idle ctron before an older cell; station nearest 
 	});
 	assert.equal(h.ix.calls.get("ann")!.jid, a[0].jid);
 	assert.ok(h.ix.busyCids().has("1.1"));
+});
+
+// A tile whose stations hold `stock[sid][item]`: per entry and station, true when every item is held at the asked
+// count, else the 1-based indexes held, nothing when none (like core.cover).
+const stocks = (stock: Record<string, Record<string, number>>) => (_i: number, q: any[]) => ({
+	r: q.flatMap(e => Object.entries(stock).flatMap(([sid, have]) => {
+		const hit = e.items.flatMap((it: any, i: number) => ((have[it[0]] ?? 0) >= it[2] ? [i + 1] : []));
+		return hit.length === 0 ? [] : [{ qid: e.qid, sids: [sid], cover: hit.length === e.items.length ? true : hit }];
+	})),
+});
+const IRON150 = ["iron-plate", "normal", 150, 150];
+
+test("supply: a station with the full count beats a nearer one holding a few (#32)", async () => {
+	const h = harness({ reply: stocks({ "1.near": { "iron-plate": 5 }, "1.far": { "iron-plate": 10000 } }) });
+	tile(h.ix, 1, { ctrons: [ctron("1.1", 280, 0)], stations: [station("1.near", 290, 0), station("1.far", 0, 0)] });
+	h.ix.call(1, call({ items: [IRON150] }), T0);
+	await h.s.pass("nauvis");
+	assert.equal(h.assigns()[0].station.sid, "1.far");
+});
+
+test("supply: with no station covering the full count the partial stock is still delivered (#32)", async () => {
+	const h = harness({ reply: stocks({ "1.9": { "iron-plate": 100 } }) });
+	tile(h.ix, 1, { ctrons: [ctron("1.1")], stations: [station("1.9")] });
+	h.ix.call(1, call({ items: [IRON150] }), T0);
+	await h.s.pass("nauvis");
+	assert.equal(h.assigns()[0].station.sid, "1.9");
+	assert.deepEqual(h.assigns()[0].supply.items, [IRON150], "the job keeps the full count");
+});
+
+test("supply: an item with stock is not dropped when another item is fully covered there (#32)", async () => {
+	const h = harness({ reply: stocks({ "1.9": { "iron-plate": 100, "copper-plate": 50 } }) });
+	tile(h.ix, 1, { ctrons: [ctron("1.1")], stations: [station("1.9")] });
+	h.ix.call(1, call({ items: [IRON150, ["copper-plate", "normal", 5, 5]] }), T0);
+	await h.s.pass("nauvis");
+	assert.equal(h.assigns()[0].supply.items.length, 2, "both items go, the iron short as it is");
+});
+
+test("supply: an item out of stock everywhere does not pull the call to the nearest station with one unit (#32)", async () => {
+	const h = harness({ reply: stocks({ "1.near": { "iron-plate": 1 }, "1.far": { "iron-plate": 10000 } }) });
+	tile(h.ix, 1, { ctrons: [ctron("1.1", 280, 0)], stations: [station("1.near", 290, 0), station("1.far", 0, 0)] });
+	h.ix.call(1, call({ items: [IRON150, ["copper-plate", "normal", 100, 100]] }), T0);
+	await h.s.pass("nauvis");
+	assert.equal(h.assigns()[0].station.sid, "1.far");
+	assert.deepEqual(h.assigns()[0].supply.items, [IRON150], "no copper anywhere: only the iron, all 150");
+});
+
+test("supply: a ctron whose slots fit the whole call beats a nearer one that would scale it down (#35)", async () => {
+	const h = harness({ reply: (inst, q) => ({ r: q.map(e => ({ qid: e.qid, sids: ["1.8"], cover: true })) }) });
+	tile(h.ix, 1, {
+		ctrons: [ctron("1.1", 290, 0, { free: { normal: 10, destroy: 10, cargo: 10 } }), ctron("1.2", 100, 0)],
+		stations: [station("1.8", 300, 0)],
+	});
+	h.ix.call(1, call({ items: [["iron-plate", "normal", 2000, 100]], trash: 1 }), T0); // 21 slots
+	await h.s.pass("nauvis");
+	const a = h.assigns();
+	assert.equal(a.length, 1);
+	assert.deepEqual(a[0].members, ["1.2"]);
+	assert.deepEqual(a[0].supply.items, [["iron-plate", "normal", 2000, 100]], "whole call, not scaled");
 });
 
 test("supply: nothing in stock with trash fetches the trash alone; with no trash the call ends no_stock", async () => {

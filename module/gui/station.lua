@@ -78,7 +78,7 @@ end
 
 local function number_field(row, tooltip, host)
 	local field = row.add({ type = "textfield", style = "ctron_cargo_textfield_style", numeric = true,
-		allow_decimal = false, allow_negative = false, tooltip = { tooltip }, tags = { ct = "cargo_confirm", host = host } })
+		allow_decimal = false, allow_negative = false, tooltip = { tooltip }, tags = { ct = "cargo_field", host = host } })
 	field.style.width = 72 -- CC's 100 would make the edit row wider than the 10-slot grid above it (R-193)
 	return field
 end
@@ -262,7 +262,8 @@ station.on.click.cargo_slot = function(player, el, event)
 end
 
 station.on.click.cargo_confirm = confirm
-station.on.confirmed.cargo_confirm = confirm
+-- a textfield also raises on_gui_click when focused, so it gets its own tag: only Enter confirms there
+station.on.confirmed.cargo_field = confirm
 
 station.on.click.cargo_remove = function(player, el)
 	local ed = editor(player, el)

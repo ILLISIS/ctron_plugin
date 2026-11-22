@@ -263,6 +263,7 @@ export class Index {
 		for (const job of [...this.jobs.values()]) {
 			if (job.at !== inst) { continue; }
 			if (job.state === "assigned") {
+				this.reopen(job);
 				this.jobs.delete(job.jid);
 			} else if (job.state === "running") {
 				job.state = "frozen";

@@ -71,6 +71,20 @@ function core.full(profile, cfg)
 	return m
 end
 
+--- What a supply run's ctron keeps in its trunk: the robots. Its own ammo sits in the launchers (balance_ammo), so what
+--- the trunk holds of the wanted ammo is the supply's (issue #34); keeping ammo_count back would hand over nothing.
+function core.supply_keep(cfg)
+	local m = core.full("normal", cfg)
+	local q = m[cfg.ammo[1]]
+	if q then
+		q[cfg.ammo[2]] = nil
+		if next(q) == nil then
+			m[cfg.ammo[1]] = nil
+		end
+	end
+	return m
+end
+
 function core.restock(full, held)
 	local m = {}
 	for name, qs in pairs(full) do
@@ -193,12 +207,25 @@ function core.ammo_plan(slots, n, want)
 	return per, move
 end
 
+--- How much of the wanted ammo moves from the launcher slots back to the trunk so the trunk holds `hold`, the amount a
+--- supply run still has to hand over (issue #34): all it holds short of it, none when the trunk has it. Delivered ammo
+--- lands in the slots (SP-8), so the own ammo (ammo_count) is what remains for the slots after the hand-over amount.
+function core.ammo_back(in_slots, in_trunk, hold)
+	return math.max(0, math.min(hold, in_slots + in_trunk) - in_trunk)
+end
+
+--- How much wanted ammo the trunk gives the launcher spread: up to `room`, less `hold` (the supply amount stays).
+function core.ammo_take(room, in_trunk, hold)
+	return math.max(0, math.min(room, in_trunk - hold))
+end
+
 --- The one "this network has the items" answer (R-34): true when probe covers every item, the indexes it covers when
 --- only some, nil when none.
 function core.cover(probe, items)
 	local hit = {}
 	for i, item in ipairs(items) do
-		if probe(item[1], item[2], item[3]) then
+		-- "any" is a missing-map pseudo-quality, not a quality name: probing it raises, so it never counts as covered
+		if item[2] ~= "any" and probe(item[1], item[2], item[3]) then
 			hit[#hit + 1] = i
 		end
 	end

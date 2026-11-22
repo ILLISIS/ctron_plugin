@@ -143,3 +143,29 @@ t.test("cover: all, some (indexes in order), none", function()
 	t.expect_same(seen, { "anormal1", "bnormal2", "crare3" }, "the probe gets name, quality and count")
 	t.expect_eq(core.cover(function() return true end, {}), true, "nothing asked: covered")
 end)
+
+t.test("cover: an any-quality item is never probed (the game raises on it) and never covered", function()
+	local seen = {}
+	local probe = function(name) seen[#seen + 1] = name; return true end
+	t.expect_same(core.cover(probe, { { "a", "any", 1 }, { "b", "normal", 1 } }), { 2 })
+	t.expect_same(seen, { "b" })
+	t.expect_eq(core.cover(probe, { { "a", "any", 1 } }), nil)
+end)
+
+t.test("ammo_back / ammo_take: a supply run's amount of the wanted ammo ends in the trunk (#34)", function()
+	t.expect_eq(core.ammo_back(50, 0, 50), 50, "ammo_count 0, 50 delivered into the launchers: all 50 go back")
+	t.expect_eq(core.ammo_back(250, 0, 50), 50, "ammo_count 200 + 50 supply: the supply 50 goes back, the own 200 stays")
+	t.expect_eq(core.ammo_back(30, 0, 50), 30, "delivered short of the supply amount: all of it goes back")
+	t.expect_eq(core.ammo_back(200, 50, 50), 0, "the trunk has it already")
+	t.expect_eq(core.ammo_back(200, 0, 0), 0, "no supply items: nothing moves")
+	t.expect_eq(core.ammo_take(400, 250, 0), 250, "no supply items: the trunk's ammo joins the spread as before")
+	t.expect_eq(core.ammo_take(400, 250, 50), 200, "what exceeds the supply amount joins the spread")
+	t.expect_eq(core.ammo_take(400, 50, 50), 0, "the supply amount alone stays")
+end)
+
+t.test("supply_keep: the robots are kept back, the wanted ammo (in the launchers) is not (#34)", function()
+	t.expect_same(core.supply_keep(cfg), { ["construction-robot"] = { normal = 50 } })
+	cfg.ammo_count = 0
+	t.expect_same(core.supply_keep(cfg), { ["construction-robot"] = { normal = 50 } })
+	cfg.ammo_count = 200
+end)

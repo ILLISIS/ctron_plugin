@@ -2,6 +2,7 @@
 -- at_task test. step(run, facts, cfg, ev) mutates the plain-data run and returns effects for runs.lua to apply.
 -- Facts are read lazily by the shell, so a state pays only for what it reads.
 local combat_core = require("modules/ctron_pluginv2/combat_core")
+local items = require("modules/ctron_pluginv2/items_core")
 
 local run_core = {}
 
@@ -11,10 +12,15 @@ run_core.LANDFILL = { "landfill", "foundation", "ice-platform" } -- first match 
 local POLL = { loading = 120, unloading = 120, deliver = 120, at_task = 60, fight = 60, follow = 60, to_player = 60,
 	at_player = 60 }
 run_core.POLL = POLL
+-- CC's job queue runs once per 90 ticks and a destroy pass strikes at most once, so strikes are 1.5 s apart (issue #2).
+run_core.NUKE_GAP = 90
 -- Supply: hand over within NEAR of the player, chase past FAR; a local leg is re-aimed once the player is MOVED from its
 -- goal. At most ROUNDS proxies per job, and the same plan SAME times in a row means nothing moves: go home.
 run_core.NEAR, run_core.FAR, run_core.MOVED = 16, 48, 16
 run_core.ROUNDS, run_core.SAME = 10, 3
+-- Supply: the longest wait at the end for robots to dock with the player's trash: 10 polls, ~2x a robot's flight over NEAR
+-- (16 tiles at 0.05 tiles/tick = 320 ticks). f.out counts every robot of the network, so the wait is bounded, not read (#24).
+run_core.OUT_LIMIT = 600
 
 local ENTER, HANDLE = {}, {} -- per state: what entering it does, and its poll and travel-event handler
 
@@ -105,7 +111,7 @@ function run_core.new(msg, i, ctx)
 	}
 	if msg.supply then
 		local p = msg.supply.place
-		run.supply = { player = msg.supply.player, place = p and { inst = p.inst, x = p.x, y = p.y } }
+		run.supply = { player = msg.supply.player, items = items.map(msg.supply.items), place = p and { inst = p.inst, x = p.x, y = p.y } }
 	end
 	if minion then
 		local l = msg.lead
@@ -481,6 +487,14 @@ local function combat_ops(run, f, acts, ops)
 	end
 end
 
+local function nuked(ops)
+	for _, o in ipairs(ops) do
+		if o[1] == "nuke" then
+			return true
+		end
+	end
+end
+
 ENTER.fight = function(run, f, cfg, acts)
 	run.task = run.task or run_core.pick(run, f.pos, f.here)
 	if not run.task then
@@ -519,7 +533,7 @@ HANDLE.fight = function(run, f, cfg, acts, ev)
 		run.reached = run.reached + 1 -- a leader never enters to_work: a popped task counts as reached (review finding 4)
 		return pop(run, f, cfg, acts, "fight")
 	end
-	run.next = f.tick + POLL.fight
+	run.next = f.tick + (nuked(d.ops) and run_core.NUKE_GAP or POLL.fight)
 end
 
 ENTER.follow = function(run, f, _, acts)
@@ -688,6 +702,9 @@ end
 
 local function supply_home(run, f, cfg, acts)
 	acts[#acts + 1] = { "stop" }
+	if f.player_short then -- #36: it leaves with the player still missing items; the controller still closes the call done
+		acts[#acts + 1] = { "short_notice" }
+	end
 	return enter(run, "returning", f, cfg, acts)
 end
 
@@ -705,7 +722,9 @@ local function hand_over(run, f, cfg, acts)
 		s.same = plan.sig == s.sig and s.same + 1 or 0
 		s.sig = plan.sig
 		if plan.n == 0 or f.robots < 1 or s.rounds >= run_core.ROUNDS or s.same >= run_core.SAME then
-			if f.out > 0 then
+			s.wait = s.wait or f.tick
+			-- no proxy made yet: nothing of the player's was handed over or taken, so no robot carries their trash
+			if s.rounds > 0 and f.out > 0 and f.tick - s.wait < run_core.OUT_LIMIT then
 				run.next = f.tick + POLL.at_player
 				return
 			end

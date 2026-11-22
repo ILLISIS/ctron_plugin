@@ -482,7 +482,10 @@ export class Scheduler {
 		return { s: some, covered: idx.filter(i => i < o.items.length).map(i => o.items[i]) };
 	}
 
-	/** R-147: the cheapest ctron to the station that can carry a non-empty share of `a` (cargo, supply). */
+	/**
+	 * R-147: the cheapest ctron to the station that can carry a non-empty share of `a` (cargo, supply); among the
+	 * candidates one whose free slots take all of `a` beats a nearer one that would scale it down (#35).
+	 */
 	private carrier(avail: CtronEntry[], sup: StationEntry, a: Amount, profile: "cargo" | "normal") {
 		const skip = new Set<CtronEntry>();
 		for (;;) {
@@ -493,7 +496,12 @@ export class Scheduler {
 				skip.add(c);
 				const k = this.port.cost(c, sup);
 				const share = k === Infinity ? null : size(a, c.free[profile]);
-				if (share && (!pick || k < pick.k || (k === pick.k && c.cid < pick.c.cid))) { pick = { c, share, k }; }
+				if (!share) { continue; }
+				const whole = need(share) === need(a);
+				const pw = pick && need(pick.share) === need(a);
+				if (!pick || (whole && !pw) || (whole === pw && (k < pick.k || (k === pick.k && c.cid < pick.c.cid)))) {
+					pick = { c, share, k };
+				}
 			}
 			if (pick) { return pick; }
 		}
@@ -519,7 +527,9 @@ export class Scheduler {
 		if (waiting.length === 0 || idleNow().length === 0) { return 0; }
 		const pool = new Map([...index.stations.values()].filter(s => s.surface === S).map(s => [s.sid, s]));
 		const entries: StockQT[] = waiting.filter(c => c.items.length > 0)
-			.map(c => ({ qid: `c:${c.player}`, mode: "supply", items: c.items }));
+			.flatMap(c => [{ qid: `c:${c.player}`, mode: "supply" as const, items: c.items },
+				// #32: some of it counts when no station has it all; a robot-carried partial stock is still delivered
+				{ qid: `p:${c.player}`, mode: "supply" as const, items: c.items.map(i => withCount(i, 1)) }]);
 		const cover = entries.length > 0
 			? await this.ask(new Set([...pool.values()].map(s => s.inst)), entries)
 			: new Map<string, Cover>();
@@ -528,11 +538,21 @@ export class Scheduler {
 		for (const c of waiting) {
 			const at = index.players.get(c.player);
 			if (index.calls.get(c.player) !== c || c.jid !== undefined || !at || at.surface !== S) { continue; }
-			const cv = cover.get(`c:${c.player}`);
-			const st = pickStation({ inst: at.inst, surface: S, x: at.x, y: at.y }, undefined, cv, pool, port.cost,
-				"all-some-nearest");
+			const full = cover.get(`c:${c.player}`);
+			const part = cover.get(`p:${c.player}`);
+			// #32: the station is chosen on the full count as ever; the count-1 answer picks it only when that is
+			// empty, and says which items the chosen station has some of
+			let pickFrom = full;
+			if (!full?.all.length && !full?.some.length && part) {
+				const every = c.items.map((_, i) => i);
+				pickFrom = { all: [], some: [...part.all.map(sid => ({ sid, idx: every })), ...part.some] };
+			}
+			const st = pickStation(
+				{ inst: at.inst, surface: S, x: at.x, y: at.y }, undefined, pickFrom, pool, port.cost,
+				"all-some-nearest",
+			);
 			if (!st) { continue; }
-			const items = coveredAt(cv, st.sid, c.items);
+			const items = coveredAt(part ?? full, st.sid, c.items);
 			if (items.length === 0 && c.trash === 0) {
 				index.closeCall(c.player, "no_stock");
 				continue;
@@ -632,7 +652,10 @@ export class Scheduler {
 	private async repick(r: Repick): Promise<void> {
 		const { index, port } = this;
 		const j = index.jobs.get(r.jid);
-		if (!j || j.cancelled || r.items.length === 0) { return; }
+		// "any" is the missing map's pseudo-quality, not a stock-queryable one; the tile can't cover it and it would
+		// keep every station out of cover.all, flattening the ranking
+		const items = r.items.filter(it => it[1] !== "any");
+		if (!j || j.cancelled || items.length === 0) { return; }
 		const lead = j.record?.station ?? j.station; // the leader's station, after any earlier re-pick
 		const mine = j.stations.get(r.cid); // a minion re-picks from its own station, toward the leader's (R-196)
 		const cur = mine ?? lead; // the station the run is at now
@@ -646,7 +669,7 @@ export class Scheduler {
 		}
 		const pool = new Map([...index.stations.values()].filter(s => s.surface === j.surface).map(s => [s.sid, s]));
 		const entry: StockQT = {
-			qid: "r", mode: r.ev === "short" ? "supply" : "drop", items: r.items, exclude_sid: cur.sid,
+			qid: "r", mode: r.ev === "short" ? "supply" : "drop", items, exclude_sid: cur.sid,
 		};
 		const cover = (await this.ask(new Set([...pool.values()].map(s => s.inst)), [entry])).get("r");
 		if (!cover || j.cancelled) { return; }

@@ -534,3 +534,30 @@ t.case("G9 balance_ammo never destroys wanted ammo when another ammo can't move 
 			"no rocket left in the trunk, the bombs there")
 	end)
 end)
+
+-- #34: delivered ammo lands in the launcher slots (SP-8) but supply_plan reads the trunk, so the run's supply amount of
+-- the wanted ammo goes back to the trunk, and only what exceeds it fills the launchers.
+t.case("G9b balance_ammo leaves a supply run's amount of the wanted ammo in the trunk", function(ctx)
+	local c = {}
+	ctx.at(10, function()
+		c.surface = paved("ctv2-g9b-supply", -40, -40, 110, 40)
+		local cfg = util.table.deepcopy(ct.settings.of(c.surface.name))
+		cfg.ammo = { "rocket", "normal" }
+		-- The ammo is delivered into the launchers, like a real load; returns the launchers' and the trunk's rockets.
+		local function run(x, delivered, ammo_count, hold)
+			cfg.ammo_count = ammo_count
+			local v = fx.ctron(c.surface, x, 0, { robots = 0 })
+			v.get_inventory(defines.inventory.spider_ammo).insert({ name = "rocket", count = delivered })
+			ct.runs.balance_ammo(v, cfg, hold)
+			return v.get_inventory(defines.inventory.spider_ammo).get_item_count("rocket"), fx.trunk_of(v).get_item_count("rocket")
+		end
+		local l, k = run(0, 50, 0, 50)
+		ctx.expect(l == 0 and k == 50, "ammo_count 0, supply 50: trunk 50, launchers 0, got " .. l .. "/" .. k)
+		l, k = run(10, 250, 200, 50)
+		ctx.expect(l == 200 and k == 50, "ammo_count 200 + supply 50: launchers 200, trunk 50, got " .. l .. "/" .. k)
+		l, k = run(20, 30, 200, 50)
+		ctx.expect(l == 0 and k == 30, "delivered short of the supply amount: all 30 in the trunk, got " .. l .. "/" .. k)
+		l, k = run(30, 200, 200, nil)
+		ctx.expect(l == 200 and k == 0, "no supply items: unchanged, got " .. l .. "/" .. k)
+	end)
+end)

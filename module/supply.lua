@@ -50,8 +50,13 @@ end
 
 local function held_of(char)
 	local map = {}
-	for _, c in ipairs(char.get_main_inventory().get_contents()) do
-		items.add(map, c.name, c.quality, c.count)
+	-- a request is met from the main, ammo, gun and armour slots alike (not trash)
+	for _, which in ipairs({ defines.inventory.character_main, defines.inventory.character_ammo,
+		defines.inventory.character_guns, defines.inventory.character_armor }) do
+		local inv = char.get_inventory(which)
+		for _, c in ipairs(inv and inv.get_contents() or {}) do
+			items.add(map, c.name, c.quality, c.count)
+		end
 	end
 	local cursor = char.player and char.player.cursor_stack
 	if cursor and cursor.valid_for_read then

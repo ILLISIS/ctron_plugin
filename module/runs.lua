@@ -246,8 +246,10 @@ FACT.supply_plan = function(f, c)
 	for _, it in ipairs(inv(c.entity, defines.inventory.spider_trunk).get_contents()) do
 		items.add(held, it.name, it.quality, it.count)
 	end
-	return ct.supply.plan(f.player.entity, held, items.full("normal", c.cfg))
+	return ct.supply.plan(f.player.entity, held, items.supply_keep(c.cfg))
 end
+-- Whether the player still misses any of their logistic requests (read only when the run goes home).
+FACT.player_short = function(f) return next(ct.supply.missing(f.player.entity)) ~= nil end
 
 -- The effect executor.
 local APPLY = {}
@@ -270,7 +272,7 @@ local function keep(run, cfg)
 end
 
 --- R-40: the launchers end up with the wanted ammo spread evenly, the rest in the trunk. Items that don't fit stay.
-local function balance_ammo(entity, cfg)
+local function balance_ammo(entity, cfg, hold)
 	local slots, trunk = inv(entity, defines.inventory.spider_ammo), inv(entity, defines.inventory.spider_trunk)
 	local map = {}
 	for _, it in ipairs(slots.get_contents()) do
@@ -299,8 +301,19 @@ local function balance_ammo(entity, cfg)
 	-- usable slots hold (owner: 400 rockets loaded as 75 x 4 with 100 left in the trunk). CC spreads only the slots.
 	local name, quality = cfg.ammo[1], cfg.ammo[2]
 	local have = map[name] and map[name][quality] or 0
+	-- Delivery lands wanted ammo in the launcher slots, not the trunk (SP-8), and supply_plan reads the trunk only: a supply
+	-- run's amount of it (`hold`) goes back to the trunk first (issue #34), what is delivered short of it all of it.
+	local back = hold and items.ammo_back(have, trunk.get_item_count({ name = name, quality = quality }), hold) or 0
+	if back > 0 then
+		back = trunk.insert({ name = name, quality = quality, count = back })
+		if back > 0 then
+			slots.remove({ name = name, quality = quality, count = back })
+			items.add(map, name, quality, -back)
+			have = have - back
+		end
+	end
 	local room = #usable * ct.settings.stacks[name] - have
-	local take = math.min(room, trunk.get_item_count({ name = name, quality = quality }))
+	local take = items.ammo_take(room, trunk.get_item_count({ name = name, quality = quality }), hold or 0)
 	if take > 0 then
 		take = trunk.remove({ name = name, quality = quality, count = take })
 		items.add(map, name, quality, take)
@@ -396,7 +409,11 @@ APPLY.requests = function(run, entity, a, cfg)
 		ct.logistics.clear(entity)
 	end
 end
-APPLY.balance_ammo = function(_, entity, _, cfg) balance_ammo(entity, cfg) end
+-- A supply run's amount of the wanted ammo stays in the trunk for the hand-over (issue #34).
+APPLY.balance_ammo = function(run, entity, _, cfg)
+	local held = run.supply and run.supply.items or {}
+	balance_ammo(entity, cfg, held[cfg.ammo[1]] and held[cfg.ammo[1]][cfg.ammo[2]])
+end
 APPLY.leave_squad = function(run) runs.leave(run) end
 APPLY.emit = function(run, _, a)
 	ct.report.event(run.jid, a[2], a[3])
@@ -426,6 +443,13 @@ APPLY.proxy = function(run, entity, a)
 	local char = ct.supply.character(run.supply.player)
 	if char then
 		ct.supply.make_proxy(char, entity.force, a[2])
+	end
+end
+APPLY.short_notice = function(run) -- #36: five seconds over their character, for that player only
+	local char = ct.supply.character(run.supply.player)
+	if char and char.player then
+		rendering.draw_text({ text = { "ctronv2.supply_short" }, surface = char.surface, target = char,
+			color = { 1, 0.6, 0.2 }, alignment = "center", players = { char.player }, time_to_live = 300 })
 	end
 end
 APPLY.drop_proxy = function(run) ct.supply.drop_proxy(run.supply.player) end

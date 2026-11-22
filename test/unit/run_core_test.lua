@@ -582,6 +582,16 @@ t.test("fight: a pop takes the next task and stays in fight; the last pop leaves
 	t.expect_true(op(acts, "rescan"))
 end)
 
+t.test("fight: a nuke spaces the next poll by NUKE_GAP (CC's 90-tick pass), not the 60-tick fight poll (#2)", function()
+	local run = squad_run(1)
+	fighting(run)
+	local spawners = { { id = 1, x = 40, y = 9.5, cluster = { 1, 2 } } }
+	local acts = rc.step(run, facts({ tick = 1260, combat = lview({ tick = 1260, atomic_count = 1, bombs = 1, min_cluster = 1,
+		spawners = spawners }) }), CFG)
+	t.expect_true(op(acts, "nuke"))
+	t.expect_eq(run.next, 1260 + rc.NUKE_GAP); t.expect_eq(rc.NUKE_GAP, 90)
+end)
+
 t.test("fight: away from the task, travel there at radius 3; the travel is to the work's instance (D2)", function()
 	local run = squad_run(1)
 	fighting(run)
@@ -794,7 +804,7 @@ end
 
 t.test("new: a supply run knows its player and their place, and loads their items with the profile", function()
 	local run = rc.new(SUPPLY, 1, { tick = 1, radius = 10, unit = 10, profile = { ["construction-robot"] = { normal = 50 } } })
-	t.expect_same(run.supply, { player = "ann", place = { inst = 1, x = 40, y = 0 } })
+	t.expect_same(run.supply, { player = "ann", items = { ["iron-plate"] = { normal = 100 } }, place = { inst = 1, x = 40, y = 0 } })
 	t.expect_same(run.load, { ["iron-plate"] = { normal = 100 }, ["construction-robot"] = { normal = 50 } })
 	t.expect_eq(#run.tasks, 0)
 end)
@@ -867,6 +877,40 @@ t.test("at_player: one proxy at a time; home when nothing is left, robots are go
 	t.expect_eq(run.state, "returning", "the same plan " .. rc.SAME .. " times in a row")
 end)
 
+t.test("at_player: going home while the player still misses items gives one short_notice (#36)", function()
+	local run = supply_run()
+	rc.step(run, near({ tick = 1120, fulfilled = true }), CFG)
+	local acts = rc.step(run, near({ tick = 1180, supply_plan = { n = 0, sig = "" }, player_short = true }), CFG)
+	t.expect_eq(run.state, "returning")
+	t.expect_same(ops(acts), { "stop", "short_notice", "drop_proxy", "travel" })
+	acts = rc.step(run, near({ tick = 1240, player_short = true }), CFG)
+	t.expect_eq(op(acts, "short_notice"), nil, "once: the run is no longer at the player")
+end)
+
+t.test("at_player: going home with nothing missing shows no notice (#36)", function()
+	local run = supply_run()
+	rc.step(run, near({ tick = 1120, fulfilled = true }), CFG)
+	local acts = rc.step(run, near({ tick = 1180, supply_plan = { n = 0, sig = "" }, player_short = false }), CFG)
+	t.expect_eq(run.state, "returning"); t.expect_eq(op(acts, "short_notice"), nil)
+end)
+
+t.test("at_player: stock gone before any hand-over goes home at once, robots out or not (#24)", function()
+	local run = supply_run()
+	rc.step(run, near({ tick = 1120, fulfilled = true, supply_plan = { n = 0, sig = "" }, out = 4 }), CFG)
+	t.expect_eq(run.state, "returning", "ghost robots took the stock: nothing to wait for")
+end)
+
+t.test("at_player: robots still out after OUT_LIMIT cannot hold the ctron (#24)", function()
+	local run = supply_run()
+	rc.step(run, near({ tick = 1120, fulfilled = true }), CFG) -- a proxy goes out
+	local idle = { supply_plan = { n = 0, sig = "" }, out = 2, tick = 1180 }
+	rc.step(run, near(idle), CFG)
+	t.expect_eq(run.state, "at_player", "its robots may carry the trash: it waits")
+	idle.tick = 1180 + rc.OUT_LIMIT
+	rc.step(run, near(idle), CFG)
+	t.expect_eq(run.state, "returning", "still out after the limit: home")
+end)
+
 t.test("at_player: a player past FAR, or gone, is chased or waited for", function()
 	local run = supply_run()
 	rc.step(run, near({ tick = 1120, fulfilled = true }), CFG)
@@ -889,4 +933,8 @@ t.test("player_left drops the proxy and waits for a place; cancel drops it and g
 	acts = rc.step(run, facts({ tick = 1220 }), CFG, { type = "cancel" })
 	t.expect_eq(run.state, "returning"); t.expect_true(op(acts, "drop_proxy")); t.expect_true(op(acts, "stop"))
 	t.expect_same(rc.step(supply_run(), facts(), CFG, { type = "player_left" }), {}, "loading: nothing to drop")
+end)
+
+t.test("supply: the run keeps the supply items as a map, so balance_ammo can leave them in the trunk (#34)", function()
+	t.expect_same(supply_run().supply.items, { ["iron-plate"] = { normal = 100 } })
 end)

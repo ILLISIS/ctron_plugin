@@ -9,13 +9,22 @@ local function on()
 	return ct.settings.global().debug
 end
 
---- msg (a LocalisedString) above entity.
+--- msg (a LocalisedString) above entity; replaces the entity's previous text (issue #3).
 function draw.text(entity, msg)
 	if not (on() and entity.valid) then
 		return
 	end
-	rendering.draw_text({ text = msg, surface = entity.surface, target = { entity = entity, offset = { 0, -3 } },
-		color = { 1, 1, 1 }, alignment = "center", time_to_live = TTL })
+	-- Lazy, never migrated: LuaRenderObjects by unit number. ponytail: a dead ctron's invalid entry stays (one
+	-- small key) until the id is reused; sweep on_entity_died only if that ever shows up.
+	local s = storage.ctron_pluginv2
+	s.debug_text = s.debug_text or {}
+	local old = s.debug_text[entity.unit_number]
+	if old and old.valid then
+		old.destroy()
+	end
+	s.debug_text[entity.unit_number] = rendering.draw_text({ text = msg, surface = entity.surface,
+		target = { entity = entity, offset = { 0, -3 } }, color = { 1, 1, 1 }, alignment = "center",
+		time_to_live = TTL })
 end
 
 --- A line through points ({ x, y } tables) on surface.

@@ -591,6 +591,19 @@ test("supply: a rejected, unanswered or lost job puts the call back to waiting; 
 	assert.deepEqual(states(ix), [[1, "none", "failed"]]);
 });
 
+test("supply: a stop of the tile before its assign is adopted puts the call back to waiting", () => {
+	const ix = new Index(0);
+	ix.snapshotPart(1, snap(1, { ctrons: [ctron("1.1")], stations: [station("1.9")] }), 0);
+	ix.call(2, CALL, 0);
+	ix.assign({ jid: "j1", kind: "supply", surface: "nauvis", at: 1, members: ["1.1"], shares: [], station: SST,
+		sizedFrom: new Map(), supply: { player: "ann" } }, 0);
+	assert.equal(ix.calls.get("ann")!.jid, "j1");
+	ix.stop(1);
+	assert.equal(ix.jobs.has("j1"), false);
+	assert.equal(ix.calls.get("ann")!.jid, undefined);
+	assert.equal(ix.supplyState("ann").st, "waiting");
+});
+
 test("supply: a player off the cluster for 5 minutes is reported offline; a return clears the clock", () => {
 	const ix = new Index(0);
 	ix.snapshotPart(1, snap(1, { stations: [station("1.9")] }), 0);
